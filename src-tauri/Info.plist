@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>OnKey listens to your singing to show how in tune you are. Your recordings stay on your Mac.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>OnKey listens to the music playing on your Mac to learn the singer's melody. It never saves the music or sends it. In listening mode a short fingerprint of it (not the audio) goes to Apple's Shazam to name the song.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>OnKey asks Spotify, Music or your browser (for YouTube) what's playing and controls playback when you press play, skip or start over.</string>
+</dict>
+</plist>
