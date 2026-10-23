@@ -18,8 +18,7 @@ export const LAUNCH = {
   plausibleDomain: "singonkey.app",
   /** Flow Myna website tracker id ("fm_…", from a Website Tracker key with singonkey.app allowed): visit
    *  paths, cookieless, the website only. Empty: no Flow Myna script, nothing sent. */
-  // Off for launch (22 Oct): Flow Myna was down. To turn it back on: "fm_XtWTFHG5Mpk7".
-  flowMynaTrackerId: "",
+  flowMynaTrackerId: "fm_XtWTFHG5Mpk7",
   /** The Discord server's invite (never expires). Empty: no Discord links. */
   discordUrl: "https://discord.gg/afHvqTNS6r",
   /** The demo video's address (hosted outside the repo, e.g. "https://media.singonkey.app/demo.mp4": too big for git, and kept off GitHub). Empty: the lane illustration. */
@@ -55,7 +54,7 @@ export const CONTACT_EMAIL: string | null = LAUNCH.contactEmail || null;
 export const SITE_URL: string | null = LAUNCH.siteUrl || null;
 
 /** Which placeholders are still empty. Printed once during the build so none is forgotten. */
-export const UNFILLED = Object.entries(LAUNCH).filter(([k, v]) => !v && k !== "demoPoster" && k !== "flowMynaTrackerId").map(([k]) => k);
+export const UNFILLED = Object.entries(LAUNCH).filter(([k, v]) => !v && k !== "demoPoster").map(([k]) => k);
 
 /** Where OnKey keeps its files on the Mac. */
 export const DATA_DIR = "~/Library/Application Support/audio.onkey.app/";
