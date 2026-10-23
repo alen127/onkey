@@ -31,16 +31,35 @@ export const isLiveSite = () => typeof window !== "undefined" && /(^|\.)singonke
 const fmApi = () => (window as unknown as { FlowMyna?: FM }).FlowMyna;
 
 let sent = new Set<string>();
+let lastSent = Date.now();
+
+/** Flow Myna ends a visit after 30 minutes with no events (its stitching.py, SESSION_WINDOW_MINUTES). */
+const VISIT_GAP_MS = 30 * 60 * 1000;
 
 /** A new page view: every event may be sent again once. */
 export function newPageView() {
   sent = new Set();
+  lastSent = Date.now();
+}
+
+/** A tab left open past Flow Myna's visit window and then used again starts a new visit there. fm.js doesn't
+ *  resend the page view (the page didn't reload), so that visit would begin mid-page, e.g. at "Saw How it works".
+ *  Send the page view again ("Viewed <path>", named exactly as fm.js's autocapture names it) so it starts on the page. */
+export function resumeIfIdle() {
+  if (!FLOWMYNA_TRACKER_ID || !isLiveSite() || Date.now() - lastSent < VISIT_GAP_MS) return;
+  let path = location.pathname.replace(/\/{2,}/g, "/");
+  if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
+  newPageView();
+  try { fmApi()?.capture(`Viewed ${path}`, { navigation_type: "return" }); } catch {}
 }
 
 /** Send `event` once per page view (`key` widens that, e.g. per question). Never throws, never blocks. */
 export function fm(event: string, props?: Props, key = event) {
-  if (!FLOWMYNA_TRACKER_ID || !isLiveSite() || sent.has(key)) return;
+  if (!FLOWMYNA_TRACKER_ID || !isLiveSite()) return;
+  resumeIfIdle();
+  if (sent.has(key)) return;
   sent.add(key);
+  lastSent = Date.now();
   try { fmApi()?.capture(event, props); } catch {}
 }
 

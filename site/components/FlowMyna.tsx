@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import Script from "next/script";
 import { FLOWMYNA_TRACKER_ID } from "@/lib/site";
-import { FM_EVENTS, fm, isLiveSite, labelVisit, newPageView } from "@/lib/flowmyna";
+import { FM_EVENTS, fm, isLiveSite, labelVisit, newPageView, resumeIfIdle } from "@/lib/flowmyna";
 
 /** Landing-page sections whose first sight in a page view is an event (≥40% of the section in view). */
 const SECTIONS: [string, string][] = [["how", FM_EVENTS.sawHow], ["privacy", FM_EVENTS.sawPrivacy], ["faq", FM_EVENTS.sawQuestions], ["get", FM_EVENTS.reachedGet]];
@@ -62,6 +62,16 @@ export function FlowMyna() {
     }
     return () => { window.removeEventListener("scroll", watch); seen.disconnect(); topics.disconnect(); timers.forEach((t) => clearTimeout(t)); };
   }, [path]);
+
+  // coming back to a tab after Flow Myna's visit window: a fresh page view first, so the new visit starts on the
+  // page (a click is caught before fm.js's own click capture sees it, so a Download after the gap follows the view)
+  useEffect(() => {
+    if (!FLOWMYNA_TRACKER_ID) return;
+    const back = () => { if (document.visibilityState === "visible") resumeIfIdle(); };
+    document.addEventListener("visibilitychange", back);
+    window.addEventListener("pointerdown", resumeIfIdle, true);
+    return () => { document.removeEventListener("visibilitychange", back); window.removeEventListener("pointerdown", resumeIfIdle, true); };
+  }, []);
 
   // questions opened (FAQ answers, on the landing page or the FAQ page)
   useEffect(() => {
