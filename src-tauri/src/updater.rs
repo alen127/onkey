@@ -42,9 +42,10 @@ static RESTART_WANTED: AtomicBool = AtomicBool::new(false);
 /// One check at a time (the daily one and "Check now").
 static CHECKING: Mutex<()> = Mutex::new(());
 
-/// This build updates itself: release builds only.
+/// This build updates itself: release builds only, and only on macOS (the releases are Mac apps: a Linux build is
+/// built from source, and never checks GitHub).
 pub fn supported() -> bool {
-    !cfg!(feature = "devtest") && !cfg!(debug_assertions)
+    !cfg!(feature = "devtest") && !cfg!(debug_assertions) && cfg!(target_os = "macos")
 }
 
 pub fn auto() -> bool {
@@ -75,7 +76,7 @@ fn due(last: Option<SystemTime>, now: SystemTime) -> bool {
 /// Check now, and download what's new (quietly). The version found, if any.
 pub fn check(app: &AppHandle) -> Result<Option<String>, String> {
     if !supported() {
-        return Err("development builds don't update".into());
+        return Err(if cfg!(target_os = "macos") { "development builds don't update" } else { "OnKey for Linux doesn't update itself: build a newer version from source" }.into());
     }
     let _one = CHECKING.lock().unwrap();
     *LAST_CHECK.lock().unwrap() = Some(SystemTime::now());
