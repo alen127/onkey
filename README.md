@@ -1,5 +1,13 @@
 # OnKey
 
+> [!NOTE]
+> **This is an unofficial Linux port** of [dsmurrell/onkey](https://github.com/dsmurrell/onkey), not made or
+> supported by its author. It follows your music player over MPRIS (Feishin, Supersonic, Spotify, browsers)
+> and captures its sound through PipeWire. Shazam, starting songs from OnKey and sharing takes as video
+> aren't available on Linux. So far it's been tested on Fedora (Bluefin) with an NVIDIA GPU, and it hasn't
+> had much real singing yet. There are no prebuilt downloads: see [docs/LINUX.md](docs/LINUX.md) to build
+> and install it. Report Linux problems here, not upstream.
+
 **Learn to sing the songs you love.** · [singonkey.app](https://singonkey.app)
 
 *Saving shower singers from themselves since 2026.*
