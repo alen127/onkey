@@ -257,9 +257,15 @@ pub fn state() -> Option<State> {
 
 /// "restart", "next", "previous", "playpause", "pause" or "play".
 pub fn control(action: &str) {
-    let Some(b) = followed() else { return };
+    if let Some(b) = followed() {
+        control_of(b, action);
+    }
+}
+
+/// `control`, of the player `b`.
+fn control_of(b: &str, action: &str) {
     let method = match action {
-        "restart" => return seek(0.0),
+        "restart" => return seek_of(b, 0.0),
         "next" => "Next",
         "previous" => "Previous",
         "playpause" => "PlayPause",
@@ -273,7 +279,12 @@ pub fn control(action: &str) {
 /// Jump to a position in the current track (seconds): SetPosition on the track's id; Seek by the difference for a
 /// player that has none.
 pub fn seek(seconds: f64) {
-    let Some(b) = followed() else { return };
+    if let Some(b) = followed() {
+        seek_of(b, seconds);
+    }
+}
+
+fn seek_of(b: &str, seconds: f64) {
     let to = (seconds.max(0.0) * 1e6) as i64;
     bus_call(b, |p| {
         let meta = p.get::<PropMap>(PLAYER, "Metadata")?;
@@ -309,6 +320,31 @@ mod tests {
             eprintln!("  its sound: {:?}, streams (any, running): {:?}", app(p.bus), crate::pw::streams(&app(p.bus)));
         }
         eprintln!("sounding: {:?}", sounding(None));
+    }
+
+    /// Live, by hand: pause, play and seek the player ONKEY_LIVE_PLAYER (a bus name: a test player, never yours).
+    ///   ONKEY_LIVE_PLAYER=org.mpris.MediaPlayer2.mpv cargo test --lib mpris::tests::live_control -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_control() {
+        let wait = || std::thread::sleep(Duration::from_millis(400));
+        let b = std::env::var("ONKEY_LIVE_PLAYER").expect("ONKEY_LIVE_PLAYER");
+        let b = b.as_str();
+        eprintln!("{b}: {:?}", status(b).map(|s| (s.playing, s.position)));
+        control_of(b, "pause");
+        wait();
+        assert!(!status(b).unwrap().playing, "paused");
+        control_of(b, "play");
+        wait();
+        assert!(status(b).unwrap().playing, "playing again");
+        seek_of(b, 60.0);
+        wait();
+        let at = status(b).unwrap().position;
+        eprintln!("after seeking to 60 s: {at:.2} s");
+        assert!((60.0..62.0).contains(&at));
+        control_of(b, "restart");
+        wait();
+        assert!(status(b).unwrap().position < 2.0, "started over");
     }
 
     #[test]
