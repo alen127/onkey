@@ -1302,7 +1302,8 @@ pub fn follow() -> Option<State> {
         None => {}
     }
     let src = want_bundle().map(source_of);
-    let app = src.filter(|s| *s != Source::Other && crate::source::controllable(*s)).and_then(|s| s.state());
+    // (a desktop player says what it plays to anyone who asks, so it's read whether or not OnKey may control it)
+    let app = src.filter(|s| *s != Source::Other && (crate::source::controllable(*s) || *s == Source::Mpris)).and_then(|s| s.state());
     // Spotify or Apple Music, controlled, says what it plays (a song, or a podcast): Shazam isn't asked about it
     let music_app = matches!(src, Some(Source::Spotify | Source::Music | Source::Mpris));
     if let Some(s) = app.as_ref().filter(|_| music_app) {
@@ -1345,7 +1346,7 @@ pub fn follow() -> Option<State> {
         // the music app didn't answer: listening's word, else (for a few seconds, while it still sounds) the app's
         // last, run on
         None => state().or_else(|| {
-            let held = APP_SAID.lock().unwrap().as_ref().filter(|_| music_app && now.is_some() && crate::source::controllable(src.unwrap()))
+            let held = APP_SAID.lock().unwrap().as_ref().filter(|_| music_app && now.is_some() && (crate::source::controllable(src.unwrap()) || src == Some(Source::Mpris)))
                 .and_then(|(s, t)| app_held(s, t.elapsed().as_secs_f64()));
             if held.is_some() {
                 FROM_APP.store(true, std::sync::atomic::Ordering::Relaxed);

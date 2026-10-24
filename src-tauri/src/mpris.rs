@@ -278,6 +278,18 @@ pub fn play_track(id: &str) {
 mod tests {
     use super::*;
 
+    /// Live, by hand: the players on the session bus and what each says.
+    ///   cargo test --lib mpris::tests::live_players -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_players() {
+        for p in players() {
+            eprintln!("{} ({}, desktop {:?}, pid {:?}): {:?}", p.bus, p.identity, p.desktop, p.pid, status(p.bus));
+            eprintln!("  its sound: {:?}, streams (any, running): {:?}", app(p.bus), crate::pw::streams(&app(p.bus)));
+        }
+        eprintln!("sounding: {:?}", sounding(None));
+    }
+
     #[test]
     fn a_song_is_the_same_song_whichever_player_plays_it() {
         assert_eq!(track_id("Oasis", "Wonderwall"), track_id(" oasis", "WONDERWALL "));
