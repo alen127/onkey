@@ -192,7 +192,7 @@ pub fn app_running(bundle: &str) -> bool {
 /// Is what the music app plays (its id) a song? Not a podcast episode, an audiobook chapter or an ad (QA: a podcast
 /// got a learn take, a 20 MB library entry and a score).
 pub fn is_song(id: &str) -> bool {
-    !["spotify:episode:", "spotify:show:", "spotify:ad:", "spotify:audiobook:", "spotify:chapter:"].iter().any(|p| id.starts_with(p))
+    !["spotify:episode:", "spotify:show:", "spotify:ad:", "spotify:audiobook:", "spotify:chapter:", "mpris:episode:"].iter().any(|p| id.starts_with(p))
 }
 
 /// May OnKey control this app (play, pause, seek, start a song)? Always, outside listening mode. In listening

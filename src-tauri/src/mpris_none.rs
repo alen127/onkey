@@ -24,6 +24,10 @@ pub fn key(bus: &str) -> &str {
     bus.strip_prefix(BUS_PREFIX).unwrap_or(bus)
 }
 
+pub fn might_not_be_song(_track_id: &str) -> bool {
+    false
+}
+
 pub fn players() -> Vec<Player> {
     Vec::new()
 }

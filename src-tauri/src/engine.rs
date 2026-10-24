@@ -1076,7 +1076,8 @@ fn run(app: AppHandle, shared: Arc<Mutex<Shared>>, store: Store, learners: Learn
         // a YouTube video that may not be a song (not in YouTube's Music category), with no lyrics found for it by
         // its first minute: is that minute someone talking (notmusic.rs)? Judged on its own thread
         if let Some(c) = cur.as_mut().filter(|c| c.take.mode == Mode::Learn && !c.talk_checked && c.take.lyrics.is_empty()
-                && c.take.seconds() >= TALK_CHECK_S && crate::youtube::might_not_be_song(&c.take.track.id)) {
+                && c.take.seconds() >= TALK_CHECK_S
+                && (crate::youtube::might_not_be_song(&c.take.track.id) || crate::mpris::might_not_be_song(&c.take.track.id))) {
             c.talk_checked = true;
             let n = (TALK_CHECK_S as usize) * crate::notmusic::SR;
             let minute = c.take.ref16[c.take.ref16.len().saturating_sub(n)..].to_vec();

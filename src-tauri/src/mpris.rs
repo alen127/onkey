@@ -168,7 +168,13 @@ pub fn status(bus: &str) -> Option<State> {
     }).unwrap_or_default();
     let micros = |v: &dbus::arg::Variant<Box<dyn RefArg>>| v.0.as_i64().or_else(|| v.0.as_u64().map(|u| u as i64)).or_else(|| v.0.as_f64().map(|f| f as i64));
     let duration = meta.get("mpris:length").and_then(micros).unwrap_or(0) as f64 / 1e6;
-    let id = track_id(&artist, &name);
+    // a podcast episode or an ad (Spotify says so in its track ids) is never learned: source::is_song
+    let trackid = meta.get("mpris:trackid").and_then(|v| v.0.as_str()).unwrap_or("").to_string();
+    let id = if ["/episode/", "/ad/", "/chapter/", ":episode:", ":ad:"].iter().any(|k| trackid.contains(k)) {
+        track_id(&artist, &name).replacen(ID_PREFIX, NOT_SONG_PREFIX, 1)
+    } else {
+        track_id(&artist, &name)
+    };
     // the cover from Apple's public iTunes Search, as for Apple Music (the player's own cover address can carry
     // your server's login)
     let cover = crate::music::cover_cached(&id, &artist, &name);
@@ -190,6 +196,21 @@ pub fn track_id(artist: &str, name: &str) -> String {
     let key = format!("{}\n{}", artist.trim().to_lowercase(), name.trim().to_lowercase());
     let h = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
     format!("{ID_PREFIX}{h:016x}")
+}
+
+/// Track ids of what isn't a song (a podcast episode, an ad): "mpris:episode:" and the hash.
+pub const NOT_SONG_PREFIX: &str = "mpris:episode:";
+
+/// A browser's player (its sound is anything: videos, calls, a talk), by its names.
+fn browser(p: &Player) -> bool {
+    let names = format!("{} {} {}", p.identity, p.desktop, key(p.bus)).to_lowercase();
+    ["brave", "chrom", "firefox", "edge", "vivaldi", "opera", "epiphany", "librewolf", "zen", "browser"].iter().any(|b| names.contains(b))
+}
+
+/// What the player followed plays may not be a song: it's a browser (as a YouTube video on macOS: youtube.rs
+/// `might_not_be_song`), so its first minute is checked for talk when no lyrics are found (engine.rs).
+pub fn might_not_be_song(track_id: &str) -> bool {
+    track_id.starts_with(ID_PREFIX) && followed().and_then(player).is_some_and(|p| browser(&p))
 }
 
 /// The players that may be followed: the one chosen in Settings, else all of them.
@@ -296,6 +317,8 @@ mod tests {
         assert_ne!(track_id("Oasis", "Wonderwall"), track_id("Ryan Adams", "Wonderwall"));
         assert!(track_id("Oasis", "Wonderwall").starts_with(ID_PREFIX));
         assert_eq!(Source::of_id(&track_id("Oasis", "Wonderwall")), Source::Mpris);
+        let episode = track_id("Oasis", "Wonderwall").replacen(ID_PREFIX, NOT_SONG_PREFIX, 1);
+        assert!(!crate::source::is_song(&episode) && Source::of_id(&episode) == Source::Mpris);
     }
 
     #[test]

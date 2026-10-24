@@ -74,9 +74,10 @@ function MicPicker() {
             <label htmlFor="set-mic" className="text-sm font-medium text-ink-100">Listen to</label>
             <p className="mt-1 text-xs text-ink-400">
               {m.chosen ? <>Now: {m.chosen.name}.</> : <span className="text-amber-200">No microphone is connected.</span>}{" "}
-              {missing ? "The one you chose isn’t connected, so OnKey uses the Mac’s own input until it is. " : ""}
-              Automatic uses your Mac’s input (System Settings → Sound), but not Bluetooth headphones’ mic while the Mac has
-              its own, so the music stays at full quality in them.
+              {missing ? `The one you chose isn’t connected, so OnKey uses the ${onLinux() ? "computer" : "Mac"}’s own input until it is. ` : ""}
+              {onLinux()
+                ? "Automatic uses your computer’s input (Settings → Sound), but not Bluetooth headphones’ mic while it has its own, so the music stays at full quality in them."
+                : "Automatic uses your Mac’s input (System Settings → Sound), but not Bluetooth headphones’ mic while the Mac has its own, so the music stays at full quality in them."}
             </p>
           </div>
           <select id="set-mic" value={m.preferred ?? ""} onChange={e => pick(e.target.value)}
@@ -272,7 +273,7 @@ export default function SettingsPage() {
           </Link>
         </section>
         <p className="mt-3 px-1 text-xs text-ink-400">
-          For personal practice at home. What OnKey learns stays on this Mac: please keep it to yourself, and don’t post
+          For personal practice at home. What OnKey learns stays on this {onLinux() ? "computer" : "Mac"}: please keep it to yourself, and don’t post
           takes or screen recordings with the music in them.
         </p>
       </main>
