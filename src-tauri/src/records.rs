@@ -151,8 +151,8 @@ fn note_build(dir: &Path) -> Option<String> {
 pub fn init(data: &Path) {
     let dir = set_dir(data);
     let m = mac();
-    crate::engine::log(&format!("==== OnKey {} on {} ({}), {} GB, macOS {}{}", build_words(&build()),
-        m["model"].as_str().unwrap_or("?"), m["chip"].as_str().unwrap_or("?"), m["ram_gb"], m["macos"].as_str().unwrap_or("?"),
+    crate::engine::log(&format!("==== OnKey {} on {} ({}), {} GB, {}{}{}", build_words(&build()),
+        m["model"].as_str().unwrap_or("?"), m["chip"].as_str().unwrap_or("?"), m["ram_gb"], if cfg!(target_os = "macos") { "macOS " } else { "" }, m["macos"].as_str().unwrap_or("?"),
         if crate::lowmem::low_memory() { ", low-memory mode" } else { "" }));
     if let Some(w) = note_build(&dir) {
         crate::engine::log(&w);
