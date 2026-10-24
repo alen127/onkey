@@ -1,9 +1,29 @@
-// Builds the Swift library (native/capture.swift for audio capture, native/shazam.swift for recognising songs,
-// native/audiofile.swift for the takes' AAC recordings, native/share.swift for a take's share video) into a static library and links it, then runs
-// Tauri's own build step.
+// Builds the Swift library on macOS (native/capture.swift for audio capture, native/shazam.swift for recognising
+// songs, native/audiofile.swift for the takes' AAC recordings, native/share.swift for a take's share video) into a
+// static library and links it, then runs Tauri's own build step.
 use std::{env, path::PathBuf, process::Command};
 
 fn main() {
+    // (the target's OS, not the build machine's: CARGO_CFG_TARGET_OS)
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        build_swift();
+    }
+
+    // keeping test audio (devtest's keep_audio): only in the private development checkout, which has
+    // dev/devkeep.rs (it isn't published), and only in development builds
+    println!("cargo:rerun-if-changed=dev/devkeep.rs");
+    println!("cargo:rustc-check-cfg=cfg(keepaudio)");
+    if env::var_os("CARGO_FEATURE_DEVTEST").is_some() && std::path::Path::new("dev/devkeep.rs").exists() {
+        println!("cargo:rustc-cfg=keepaudio");
+    }
+
+    build_identity();
+    tauri_build::build()
+}
+
+/// The Swift library (macOS only): Core Audio capture, ShazamKit, the takes' AAC and the share video. On Linux
+/// those are Rust (pw.rs, mpris.rs, takeaudio.rs through ffmpeg) or not there (Shazam, sharing).
+fn build_swift() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let srcs = ["native/capture.swift", "native/permissions.swift", "native/shazam.swift", "native/audiofile.swift", "native/share.swift"];
     for src in srcs {
@@ -36,17 +56,6 @@ fn main() {
     for fw in ["CoreAudio", "AudioToolbox", "AVFoundation", "Foundation", "ShazamKit", "AppKit", "CoreServices", "IOKit", "CoreMedia", "CoreVideo", "CoreText", "CoreGraphics", "ImageIO"] {
         println!("cargo:rustc-link-lib=framework={fw}");
     }
-
-    // keeping test audio (devtest's keep_audio): only in the private development checkout, which has
-    // dev/devkeep.rs (it isn't published), and only in development builds
-    println!("cargo:rerun-if-changed=dev/devkeep.rs");
-    println!("cargo:rustc-check-cfg=cfg(keepaudio)");
-    if env::var_os("CARGO_FEATURE_DEVTEST").is_some() && std::path::Path::new("dev/devkeep.rs").exists() {
-        println!("cargo:rustc-cfg=keepaudio");
-    }
-
-    build_identity();
-    tauri_build::build()
 }
 
 /// Which commit this build is (ONKEY_GIT_SHA, "-dirty" with uncommitted changes when the build script ran) and when
