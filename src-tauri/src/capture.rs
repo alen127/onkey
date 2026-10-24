@@ -1,11 +1,14 @@
 //! Audio in: the music app's output and your mic, sample-aligned, from the Swift capture library
-//! (native/capture.swift). Frames arrive on Core Audio's real-time thread and go into a lock-free ring buffer,
-//! so that thread never waits on us.
-use std::ffi::{c_char, c_void, CString};
+//! (native/capture.swift) on macOS, and from PipeWire on Linux (pw.rs, `linux` below). Frames arrive on the audio
+//! system's real-time thread and go into a lock-free ring buffer, so that thread never waits on us.
+#[cfg(target_os = "macos")]
+use std::ffi::{c_char, CString};
+use std::ffi::c_void;
 use std::sync::Mutex;
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
+#[cfg(target_os = "macos")]
 extern "C" {
     fn onkey_capture_start(bundle: *const c_char,
                            cb: extern "C" fn(*const f32, i32, *mut c_void), ctx: *mut c_void,
@@ -68,10 +71,12 @@ pub struct Mic {
     pub name: String,
 }
 
+#[cfg(target_os = "macos")]
 fn c_str(buf: &[c_char]) -> String {
     unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
 }
 
+#[cfg(target_os = "macos")]
 /// The microphone OnKey listens to now, the take engine and setup's mic check alike (native/capture.swift
 /// `chooseMic`): the one chosen in Settings while it's connected, else the Mac's default input (not Bluetooth
 /// headphones' while the Mac has another mic). None: no input device at all.
@@ -81,6 +86,7 @@ pub fn chosen_mic() -> Option<Mic> {
     found.then(|| Mic { uid: c_str(&uid), name: c_str(&name) })
 }
 
+#[cfg(target_os = "macos")]
 /// Every microphone connected.
 pub fn mics() -> Vec<Mic> {
     let mut buf = vec![0 as c_char; 64 * 1024];
@@ -89,6 +95,7 @@ pub fn mics() -> Vec<Mic> {
     list.iter().filter_map(|m| Some(Mic { uid: m["uid"].as_str()?.to_string(), name: m["name"].as_str()?.to_string() })).collect()
 }
 
+#[cfg(target_os = "macos")]
 /// Prefer this microphone (a uid from `mics`) while it's connected; "" for automatic.
 pub fn set_mic_preference(uid: &str) {
     if let Ok(u) = CString::new(uid) {
@@ -108,18 +115,27 @@ impl Capture {
             return Ok(Capture { rate, mic_name: mic.name, mic_uid: mic.uid, consumer, sim: Some(stop) });
         }
         *PRODUCER.lock().unwrap() = Some(producer);
-        let b = CString::new(bundle).unwrap();
-        let mut rate = 0.0;
-        let code = unsafe { onkey_capture_start(b.as_ptr(), on_audio, std::ptr::null_mut(), &mut rate) };
-        match code {
-            0 => {
-                let (mut uid, mut name) = ([0 as c_char; 512], [0 as c_char; 512]);
-                unsafe { onkey_capture_mic(uid.as_mut_ptr(), name.as_mut_ptr(), 512) };
-                Ok(Capture { rate, mic_name: c_str(&name), mic_uid: c_str(&uid), consumer, sim: None })
+        #[cfg(target_os = "macos")]
+        {
+            let b = CString::new(bundle).unwrap();
+            let mut rate = 0.0;
+            let code = unsafe { onkey_capture_start(b.as_ptr(), on_audio, std::ptr::null_mut(), &mut rate) };
+            match code {
+                0 => {
+                    let (mut uid, mut name) = ([0 as c_char; 512], [0 as c_char; 512]);
+                    unsafe { onkey_capture_mic(uid.as_mut_ptr(), name.as_mut_ptr(), 512) };
+                    Ok(Capture { rate, mic_name: c_str(&name), mic_uid: c_str(&uid), consumer, sim: None })
+                }
+                1 => Err(CaptureError::AppSilent),
+                2 => Err(CaptureError::TapRefused),
+                _ => Err(CaptureError::DeviceFailed),
             }
-            1 => Err(CaptureError::AppSilent),
-            2 => Err(CaptureError::TapRefused),
-            _ => Err(CaptureError::DeviceFailed),
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (rate, mic) = linux::start(bundle)?;
+            let mic = mic.unwrap_or(Mic { uid: String::new(), name: String::new() });
+            Ok(Capture { rate, mic_name: mic.name, mic_uid: mic.uid, consumer, sim: None })
         }
     }
 
@@ -144,11 +160,15 @@ impl Drop for Capture {
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
             return;
         }
+        #[cfg(target_os = "macos")]
         unsafe { onkey_capture_stop() };
+        #[cfg(target_os = "linux")]
+        crate::pw::stop_capture();
         *PRODUCER.lock().unwrap() = None;
     }
 }
 
+#[cfg(target_os = "macos")]
 /// The default output device's uid ("" if unknown).
 pub fn output_uid() -> String {
     let mut buf = [0 as std::ffi::c_char; 256];
@@ -156,6 +176,7 @@ pub fn output_uid() -> String {
     unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
 }
 
+#[cfg(target_os = "macos")]
 /// The default output device's name ("AirPods Pro", "MacBook Pro Speakers"; "" if unknown).
 pub fn output_name() -> String {
     let mut buf = [0 as std::ffi::c_char; 256];
@@ -163,6 +184,7 @@ pub fn output_name() -> String {
     unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
 }
 
+#[cfg(target_os = "macos")]
 /// How long after an app plays audio you hear it (headphones ~215 ms over Bluetooth, speakers ~30 ms), as Core
 /// Audio reports it. What OnKey allows for is `timing::heard_ms`: this, corrected by your tap-along check of the
 /// device when you've done one (often wrong over Bluetooth).
@@ -170,21 +192,132 @@ pub fn output_latency_ms() -> i32 {
     unsafe { onkey_output_latency_ms() }
 }
 
+#[cfg(target_os = "macos")]
 /// Whether an app (bundle id prefix) is playing any sound right now.
 pub fn app_sounding(bundle: &str) -> bool {
     let b = CString::new(bundle).unwrap();
     unsafe { onkey_app_sounding(b.as_ptr()) == 1 }
 }
 
+#[cfg(target_os = "macos")]
 /// Whether WebKit's shared sound process (Safari's, Mail's and OnKey's own window's) is told apart by the app it
 /// plays for, so that capturing "Safari" never hears OnKey (native/capture.swift `belongs`).
 pub fn webkit_separable() -> bool {
     unsafe { onkey_webkit_separable() == 1 }
 }
 
+#[cfg(target_os = "macos")]
 /// How many times the Mac has woken from sleep since this was first called (native/capture.swift).
 pub fn wake_count() -> i32 {
     unsafe { onkey_wake_count() }
+}
+
+/// Linux: the same answers from PipeWire (pw.rs), for the player named by its MPRIS bus name (mpris.rs). A mic's
+/// uid is its PipeWire node name.
+#[cfg(target_os = "linux")]
+pub use linux::{app_sounding, chosen_mic, mics, output_latency_ms, output_name, output_uid, set_mic_preference, wake_count, webkit_separable};
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::{on_audio, CaptureError, Mic, CHANNELS};
+    use std::sync::Mutex;
+
+    /// A microphone chosen in Settings (a node name); "" automatic.
+    static PREFERRED: Mutex<String> = Mutex::new(String::new());
+
+    fn mic(n: &crate::pw::Node) -> Mic {
+        Mic { uid: n.name.clone(), name: n.description.clone() }
+    }
+
+    /// The one chosen in Settings while it's connected; else the default input (GNOME's Settings → Sound), unless
+    /// that's Bluetooth headphones' while there's another (built-in first, then USB), as on macOS: the headset
+    /// profile drops the music in them to call quality.
+    pub fn chosen_mic() -> Option<Mic> {
+        let (devices, default) = crate::pw::sources();
+        let pref = PREFERRED.lock().unwrap().clone();
+        if let Some(d) = devices.iter().find(|d| !pref.is_empty() && d.name == pref) {
+            return Some(mic(d));
+        }
+        let dflt = devices.iter().find(|d| d.name == default);
+        if let Some(d) = dflt.filter(|d| !d.bluetooth()) {
+            return Some(mic(d));
+        }
+        devices.iter().find(|d| d.name.starts_with("alsa_input.pci"))
+            .or_else(|| devices.iter().find(|d| d.name.starts_with("alsa_input.usb")))
+            .or(dflt).or(devices.first()).map(mic)
+    }
+
+    pub fn mics() -> Vec<Mic> {
+        crate::pw::sources().0.iter().map(mic).collect()
+    }
+
+    pub fn set_mic_preference(uid: &str) {
+        *PREFERRED.lock().unwrap() = uid.to_string();
+    }
+
+    pub fn output_uid() -> String {
+        crate::pw::default_sink().map(|n| n.name).unwrap_or_default()
+    }
+
+    pub fn output_name() -> String {
+        crate::pw::default_sink().map(|n| n.description).unwrap_or_default()
+    }
+
+    /// PipeWire doesn't say a device's whole delay: its quantum twice (the graph's buffer and the device's), and
+    /// for Bluetooth the codec's as a rule (~200 ms). The tap-along check in Settings measures yours.
+    pub fn output_latency_ms() -> i32 {
+        let Some(n) = crate::pw::default_sink() else { return 0 };
+        let (q, r) = n.latency.unwrap_or((1024, 48_000));
+        let ms = 2000.0 * q as f64 / r.max(1) as f64;
+        (ms + if n.bluetooth() { 200.0 } else { 0.0 }).round() as i32
+    }
+
+    /// Whether the player (its bus name) has a stream playing now.
+    pub fn app_sounding(bundle: &str) -> bool {
+        crate::pw::streams(&crate::mpris::app(bundle)).1
+    }
+
+    /// OnKey's own window's sound is never another app's here (pw.rs leaves out OnKey's processes).
+    pub fn webkit_separable() -> bool {
+        true
+    }
+
+    /// How many times the computer has slept and woken since this was first called: the boot clock runs on through
+    /// a suspend and the monotonic one doesn't, so their difference jumps (asked every few seconds by the watchdog).
+    pub fn wake_count() -> i32 {
+        static WAKES: Mutex<(i32, Option<f64>)> = Mutex::new((0, None));
+        let clock = |c| {
+            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            unsafe { libc::clock_gettime(c, &mut ts) };
+            ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
+        };
+        let asleep = clock(libc::CLOCK_BOOTTIME) - clock(libc::CLOCK_MONOTONIC);
+        let mut w = WAKES.lock().unwrap();
+        if w.1.is_some_and(|before| asleep - before > 2.0) {
+            w.0 += 1;
+        }
+        w.1 = Some(asleep);
+        w.0
+    }
+
+    /// Start capturing the player `bundle` and the mic `chosen_mic` picks: the rate, and the mic (None: no input
+    /// device, the mic channel is silent).
+    pub fn start(bundle: &str) -> Result<(f64, Option<Mic>), CaptureError> {
+        let app = crate::mpris::app(bundle);
+        // no stream at all yet: as a Mac app that hasn't played anything
+        if !crate::pw::streams(&app).0 {
+            return Err(CaptureError::AppSilent);
+        }
+        let mic = chosen_mic();
+        if !crate::pw::capture(app, mic.as_ref().map(|m| m.uid.clone()), deliver) {
+            return Err(CaptureError::DeviceFailed);
+        }
+        Ok((crate::pw::RATE as f64, mic))
+    }
+
+    fn deliver(samples: &[f32]) {
+        on_audio(samples.as_ptr(), (samples.len() / CHANNELS) as i32, std::ptr::null_mut());
+    }
 }
 
 /// When the capture should be restarted because the tap has gone dead: after sleep and wake, or a Core Audio

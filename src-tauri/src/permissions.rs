@@ -1,8 +1,10 @@
 //! First-run setup: what OnKey needs from macOS (the microphone, and system audio recording to hear the music
 //! app), a mic level meter for "say something", and whether setup has been done (setup_done, in OnKey's settings
-//! through settings.rs).
+//! through settings.rs). Linux asks no permission for either (PipeWire lets a desktop app hear the mic and other
+//! apps): both are allowed, and the meter is PipeWire's (`linux` below).
 use serde_json::{json, Value};
 
+#[cfg(target_os = "macos")]
 extern "C" {
     fn onkey_mic_status() -> i32;
     fn onkey_mic_request();
@@ -15,6 +17,34 @@ extern "C" {
     fn onkey_automation(bundle: *const std::ffi::c_char) -> i32;
     fn onkey_app_running(bundle: *const std::ffi::c_char) -> i32;
 }
+
+/// Linux: the same calls as the Swift bridge's, answered by PipeWire (pw.rs) or as allowed.
+#[cfg(target_os = "linux")]
+#[allow(clippy::missing_safety_doc)]
+mod linux {
+    use std::ffi::c_char;
+    pub unsafe fn onkey_mic_status() -> i32 { 3 }
+    pub unsafe fn onkey_mic_request() {}
+    pub unsafe fn onkey_audio_capture_status() -> i32 { 3 }
+    pub unsafe fn onkey_audio_capture_request() -> i32 { 0 }
+    pub unsafe fn onkey_macos_supported() -> i32 { 1 }
+    /// 0 running, 1 no input device, 3 couldn't start it (as native/permissions.swift)
+    pub unsafe fn onkey_mic_meter(on: i32) -> i32 {
+        let mic = crate::capture::chosen_mic();
+        if on != 0 && mic.is_none() {
+            return 1;
+        }
+        let running = crate::pw::meter(on != 0, mic.map(|m| m.uid));
+        if on == 0 || running { 0 } else { 3 }
+    }
+    pub unsafe fn onkey_mic_level() -> f32 { crate::pw::meter_level().0 }
+    pub unsafe fn onkey_mic_blocks() -> i32 { crate::pw::meter_level().1.min(i32::MAX as usize) as i32 }
+    /// Spotify and Apple Music by their macOS bundle ids: not installed (players are followed through MPRIS)
+    pub unsafe fn onkey_automation(_bundle: *const c_char) -> i32 { 5 }
+    pub unsafe fn onkey_app_running(_bundle: *const c_char) -> i32 { 5 }
+}
+#[cfg(target_os = "linux")]
+use linux::*;
 
 fn name(code: i32) -> &'static str {
     match code {
@@ -31,7 +61,7 @@ fn name(code: i32) -> &'static str {
 pub fn status() -> Value {
     let (mic, audio, supported) = crate::records::timed("perm", "mic, audio and macOS status",
         || unsafe { (onkey_mic_status(), onkey_audio_capture_status(), onkey_macos_supported()) });
-    json!({"mic": name(mic), "audio": name(audio), "macos_ok": supported == 1,
+    json!({"mic": name(mic), "audio": name(audio), "macos_ok": supported == 1, "platform": std::env::consts::OS,
            "done": crate::settings::get("setup_done"),
            "control": {"spotify": automation("com.spotify.client"), "music": automation("com.apple.Music")},
            "listen_only": crate::settings::listen_only()})
@@ -184,6 +214,11 @@ pub fn request_audio() -> bool {
 
 /// Open the System Settings pane for "mic", "audio" (system audio recording) or "automation" (control of apps).
 pub fn open_settings(which: &str) {
+    // Linux: no permissions to change; the sound settings, for the mic
+    if cfg!(target_os = "linux") {
+        let _ = std::process::Command::new("gnome-control-center").arg("sound").spawn();
+        return;
+    }
     let pane = match which {
         "mic" => "Privacy_Microphone",
         "automation" => "Privacy_Automation",
