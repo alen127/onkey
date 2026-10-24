@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > **This is an unofficial Linux port** of [dsmurrell/onkey](https://github.com/dsmurrell/onkey), not made or
-> supported by its author. It follows your music player over MPRIS (Feishin, Supersonic, Spotify, browsers)
+> supported by its author. It follows your music player over MPRIS
 > and captures its sound through PipeWire. Shazam, starting songs from OnKey and sharing takes as video
 > aren't available on Linux. See [docs/LINUX.md](docs/LINUX.md) to build
 > and install it.
