@@ -57,7 +57,7 @@ Comment=Learn to sing the songs you love
 Exec=$HOME/.local/bin/onkey
 Icon=onkey
 Terminal=false
-Categories=AudioVideo;Audio;Music;Education;
+Categories=AudioVideo;Audio;Music;
 StartupWMClass=audio.onkey.app
 EOF
 command -v update-desktop-database >/dev/null && update-desktop-database "$HOME/.local/share/applications" || true
