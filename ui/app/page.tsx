@@ -11,7 +11,7 @@ import Heart from "@/components/Heart";
 import { DevCopy, logTime, takeLink } from "@/components/Dev";
 import { Logo, Nav } from "@/components/Nav";
 import { FinishSong, SingSwitches, Icon, Lyrics, ScoreAndHint, SkipToSinging, SongClock, StatusChips, TakeToast, Transport, useTick } from "@/components/LiveBits";
-import { getLibrary, inApp, learnAnyway, isFavorite, learnPct, learnStage, live, openApp, startingSong, openPrivacySettings, playerNow, renameTrack, setFavorite, setMini, setupOpenSettings, setupStatus, setYouTube, usePlaying, useSession, type LearnJob, type Line, type SongState, type Status } from "@/lib/session";
+import { getLibrary, inApp, learnAnyway, onLinux, isFavorite, learnPct, learnStage, live, openApp, startingSong, openPrivacySettings, playerNow, renameTrack, setFavorite, setMini, setupOpenSettings, setupStatus, setYouTube, usePlaying, useSession, type LearnJob, type Line, type SongState, type Status } from "@/lib/session";
 import { typing } from "@/lib/keys";
 import { clock, sourceName } from "@/lib/music";
 
@@ -205,7 +205,8 @@ const LINE_SUB: Record<Line["kind"], string> = {
   finding: "OnKey is naming the song from its sound. It takes a few seconds, and the take starts from the song’s beginning.",
   new_song: "OnKey is naming the next song. Its take starts from the song’s beginning.",
   unnamed: "It isn’t one OnKey or Shazam knows. OnKey asks again when the sound changes.",
-  no_shazam: "Shazam can’t be reached just now, so only songs learned on this Mac are recognised. OnKey keeps trying.",
+  no_shazam: onLinux() ? "There’s no Shazam on Linux: OnKey names a new song from what your player says is playing (MPRIS), and recognises songs it has learned by their sound."
+    : "Shazam can’t be reached just now, so only songs learned on this Mac are recognised. OnKey keeps trying.",
   shazam_off: "Shazam is off (Settings), so from its sound alone OnKey recognises only songs already learned on this Mac. Turn Shazam on to name new ones.",
   podcast: "Play a song and OnKey follows along.",
   learning: "",
@@ -238,6 +239,7 @@ function Waiting({ connected, line, player, youtube, listening, onSetup }: { con
   const idle = !said && player?.state !== "playing" && !start;
   const starters = connected && startersHidden === false && (idle || (firstRun && waited && !start));
   const title = !connected ? "Starting OnKey…" : start ? (start.name ? `Starting ${start.name}…` : "Starting the song…") : said ? (said.kind === "finding" || said.kind === "new_song" ? "Getting ready…" : said.kind === "podcast" ? "Not a song" : said.kind === "elsewhere" ? said.text : "Still listening") : player?.state === "playing" ? "Getting ready…"
+    : onLinux() ? "Play a song in your music player"
     : youtube ? "Play a song in Spotify, Apple Music or YouTube" : "Play a song in Spotify or Apple Music";
   const sub = !connected
     ? "Connecting to the engine on this Mac."
@@ -263,7 +265,8 @@ function Waiting({ connected, line, player, youtube, listening, onSetup }: { con
           <span><Kbd>Space</Kbd> play / pause</span><span><Kbd>R</Kbd> start over</span><span><Kbd>←</Kbd><Kbd>→</Kbd> skip</span><span><Kbd>F</Kbd> favourite</span>
         </div>
         {/* the YouTube switch; when listening, only while it's off (songs in a browser aren't picked up until it's on) */}
-        {connected && (!listening || !youtube) && (
+        {/* (on Linux a browser is a player like any other) */}
+        {connected && (!listening || !youtube) && !onLinux() && (
           <div className="mx-auto mt-8 max-w-sm rounded-xl border border-white/6 px-4 py-3 text-left text-xs text-ink-400">
             <div className="flex items-center justify-between gap-3">
               <span className="font-medium text-ink-200">YouTube and YouTube Music <span className="ml-1 rounded-full bg-white/6 px-1.5 py-px text-[10px] font-normal text-ink-300">Experimental</span></span>

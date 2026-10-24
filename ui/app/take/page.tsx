@@ -7,7 +7,7 @@ import LearnBar from "@/components/LearnBar";
 import { reportProblem } from "@/components/ReportProblem";
 import SharePanel from "@/components/SharePanel";
 import { DevCopy, takeLink } from "@/components/Dev";
-import { allowControl, alongMode, type AlongMode, getSettings, getTake, joinAlong, learnLabel, playAlong, playTrack, playerNow, stopPlayAlong, takeAudioUrl, takePlaying, type Track, useLearn, useSession } from "@/lib/session";
+import { allowControl, alongMode, onLinux, type AlongMode, getSettings, getTake, joinAlong, learnLabel, playAlong, playTrack, playerNow, stopPlayAlong, takeAudioUrl, takePlaying, type Track, useLearn, useSession } from "@/lib/session";
 import { COLORS, clock, credit, grade, noteName, scoreWord, sourceName, when } from "@/lib/music";
 
 type Line = { t0: number; t1: number; text: string; ref_frames: number; coverage: number; accuracy: number | null; bias: number | null };
@@ -303,7 +303,8 @@ function Take() {
                 From the start
               </button>
             )}
-            {r.song_offset != null && r.audio_kept !== false && (
+            {/* (the share video is drawn by macOS: not on Linux yet) */}
+            {r.song_offset != null && r.audio_kept !== false && !onLinux() && (
               <button onClick={() => setSharing(v => !v)} aria-expanded={sharing}
                       className="inline-flex items-center gap-1.5 rounded-xl bg-white/6 px-3 py-2 text-sm font-medium text-ink-100 transition hover:bg-white/10">
                 <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>

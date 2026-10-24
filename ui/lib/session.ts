@@ -558,6 +558,22 @@ async function controlled(cmd: string, args: Record<string, unknown>, retry: () 
 }
 
 /** Let OnKey control an app from now on ("control_spotify", "control_music" or "youtube"). */
+/** OnKey for Linux: the music app is any desktop player (MPRIS), there are no permissions to ask for, no Shazam
+ *  and no share video. */
+export const onLinux = () => typeof navigator !== "undefined" && navigator.userAgent.includes("Linux");
+
+/** A desktop player on Linux (MPRIS): the key it's chosen by in Settings, and what it calls itself. */
+export type Player = { key: string; name: string };
+/** The players there now, the one chosen (null: whichever plays) and the one being listened to. */
+export type Players = { players: Player[]; chosen: string | null; following: string | null };
+export async function getPlayers(): Promise<Players | null> {
+  return inApp() ? ((await invoke("players")) as Players) : null;
+}
+/** Follow only this player (its key), or whichever plays (null). */
+export async function setPlayer(key: string | null) {
+  if (inApp()) await invoke("set_player", { key });
+}
+
 export async function allowControl(key: string) {
   if (inApp()) await invoke("allow_control", { key });
 }
@@ -585,12 +601,14 @@ export type Settings = { listening: boolean; control_spotify: boolean; control_m
   /** Shazam names songs not learned here when no music app OnKey controls says what plays (on by default) */
   shazam?: boolean;
   /** lyrics from LRCLIB shown with the notes (on by default); off, LRCLIB isn't asked and none are shown */
-  show_lyrics?: boolean };
+  show_lyrics?: boolean;
+  /** Linux: "linux", following desktop players (MPRIS), which OnKey may control (on by default) */
+  platform?: string; control_mpris?: boolean };
 export async function getSettings(): Promise<Settings | null> {
   if (mirror()) return (await fetch("/api/settings")).json();
   return inApp() ? ((await invoke("settings_now")) as Settings) : null;
 }
-export async function setSetting(key: "listening" | "control_spotify" | "control_music" | "hide_starters" | "keep_models" | "battery_30fps" | "voice_breaks" | "shazam" | "show_lyrics", on: boolean) {
+export async function setSetting(key: "listening" | "control_spotify" | "control_music" | "control_mpris" | "hide_starters" | "keep_models" | "battery_30fps" | "voice_breaks" | "shazam" | "show_lyrics", on: boolean) {
   if (inApp()) await invoke("set_setting", { key, on });
   if (key === "show_lyrics") live.showLyrics(on);
 }

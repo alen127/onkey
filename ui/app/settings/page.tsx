@@ -2,14 +2,54 @@
 // Settings: every switch is something you allow. "Let OnKey control" Spotify, Apple Music (on by default) and YouTube in
 // your browser (opt-in): all three off is listening only (settings.rs `listen_only`; there's no switch of its own). Then
 // "Use Shazam to name new songs" (on by default; off, nothing is sent to Apple), "Show lyrics" (on by default; off, LRCLIB
-// isn't asked) and the microphone. (The output timing check, components/TimingCheck.tsx, is retired: see
+// isn't asked) and the microphone. On Linux the music app is a desktop player (MPRIS): which one to follow, and whether
+// OnKey may control it, instead of the apps and Shazam. (The output timing check, components/TimingCheck.tsx, is retired: see
 // timing::CHECK_RETIRED.)
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Logo, Nav } from "@/components/Nav";
 import { reportProblem } from "@/components/ReportProblem";
 import { checkForUpdate, restartToUpdate, setAutoUpdate, useUpdate } from "@/lib/update";
-import { allowControl, getMics, getSettings, openLink, setMic, setSetting, setupControl, setYouTube, type Mics, type Settings } from "@/lib/session";
+import { allowControl, getMics, getPlayers, getSettings, onLinux, openLink, setMic, setPlayer, setSetting, setupControl, setYouTube, type Mics, type Players, type Settings } from "@/lib/session";
+
+/** Linux: the desktop player to follow (whichever plays, or one chosen), and whether OnKey may control it. */
+function PlayerPicker({ control, onControl }: { control: boolean; onControl: (on: boolean) => void }) {
+  const [p, setP] = useState<Players | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => getPlayers().then(v => { if (alive) setP(v); }).catch(() => {});
+    load();
+    const t = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 3000);   // players come and go
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  if (!p) return null;
+  const missing = p.chosen != null && !p.players.some(x => x.key === p.chosen);
+  const pick = async (key: string) => { await setPlayer(key === "" ? null : key); setP(await getPlayers()); };
+  return (
+    <>
+      <h2 className="mt-6 mb-2 px-1 text-sm font-medium text-ink-200">Music player</h2>
+      <section className="glass overflow-hidden rounded-3xl">
+        <div className="flex items-start justify-between gap-6 border-b border-white/6 px-5 py-4">
+          <div className="min-w-0">
+            <label htmlFor="set-player" className="text-sm font-medium text-ink-100">Follow</label>
+            <p className="mt-1 text-xs text-ink-400">
+              Any player that says what it plays (MPRIS): Feishin, Supersonic, Spotify, a browser. Automatic follows the one
+              playing, one whose sound is on this computer first.{missing ? " The one you chose isn’t open." : ""}
+            </p>
+          </div>
+          <select id="set-player" value={p.chosen ?? ""} onChange={e => pick(e.target.value)}
+                  className="mt-0.5 max-w-56 shrink-0 rounded-lg border border-white/8 bg-white/4 px-2.5 py-1.5 text-sm text-ink-100 outline-none focus:border-accent-400">
+            <option value="">Automatic</option>
+            {p.players.map(x => <option key={x.key} value={x.key}>{x.name}</option>)}
+            {missing && <option value={p.chosen!}>{p.chosen} (not open)</option>}
+          </select>
+        </div>
+        <Row id="set-mpris" title="Let OnKey control it" on={control} onChange={onControl}
+             sub="Play, pause, start over and skip to the singing from OnKey. Off, OnKey still reads what’s playing and where, and touches nothing." />
+      </section>
+    </>
+  );
+}
 
 /** Which microphone OnKey listens to: automatic (the Mac's input, as chosen in System Settings → Sound) or one
  *  picked here. Setup's mic check and your takes use the same one. */
@@ -57,7 +97,7 @@ function Updates() {
   const [busy, setBusy] = useState(false);
   if (!u) return null;
   const check = async () => { setBusy(true); try { setU(await checkForUpdate()); } finally { setBusy(false); } };
-  const line = !u.supported ? "Development build: it doesn’t update itself."
+  const line = !u.supported ? (onLinux() ? "OnKey for Linux doesn’t update itself: build a newer version from source." : "Development build: it doesn’t update itself.")
     : u.waiting ? `OnKey ${u.available} is installed when this song is over, then OnKey restarts.`
     : u.state === "ready" ? `OnKey ${u.available} is ready. Restart to update, or it’s installed when you quit.`
     : u.state === "downloading" ? `Downloading OnKey ${u.available}…`
@@ -111,9 +151,9 @@ export default function SettingsPage() {
   useEffect(() => { getSettings().then(setS).catch(() => setS(null)); }, []);
   // listening only: Spotify, Apple Music and YouTube all off (settings.rs `listen_only`)
   const listenOnly = !!s?.listen_only;
-  const change = async (key: Exclude<keyof Settings, "small_mac" | "listen_only">, on: boolean) => {
+  const change = async (key: Exclude<keyof Settings, "small_mac" | "listen_only" | "platform">, on: boolean) => {
     if (key === "youtube") await setYouTube(on);
-    else if (key === "keep_models" || key === "battery_30fps" || key === "voice_breaks" || key === "shazam" || key === "show_lyrics") await setSetting(key, on);
+    else if (key === "keep_models" || key === "battery_30fps" || key === "voice_breaks" || key === "shazam" || key === "show_lyrics" || key === "control_mpris") await setSetting(key, on);
     else if ((key === "control_spotify" || key === "control_music") && !on && s && !s.listening) {
       // the older way (following the apps by asking them, which controls both): turning one off moves to listening,
       // with the other app still allowed, as the old "Listen only" switch's way out did
@@ -130,7 +170,16 @@ export default function SettingsPage() {
       <header data-tauri-drag-region className="app-header flex items-center gap-5 px-6 pt-4 pb-3"><Logo /><Nav /></header>
       <main className="mx-auto max-w-2xl px-6 pb-16">
         <h1 className="mt-6 text-3xl font-semibold tracking-tight">Settings</h1>
-        {!s ? <div className="glass mt-6 h-40 rounded-3xl shimmer" /> : (
+        {s && s.platform === "linux" && <PlayerPicker control={s.control_mpris !== false} onControl={on => change("control_mpris", on)} />}
+        {!s ? <div className="glass mt-6 h-40 rounded-3xl shimmer" /> : s.platform === "linux" ? (
+          <>
+            <h2 className="mt-8 mb-2 px-1 text-sm font-medium text-ink-200">Lyrics</h2>
+            <section className="glass overflow-hidden rounded-3xl">
+              <Row id="set-show-lyrics" title="Show lyrics" on={s.show_lyrics !== false} onChange={on => change("show_lyrics", on)}
+                   sub="Lyrics come from LRCLIB, a free community lyrics database. When off, OnKey doesn’t ask LRCLIB for any, and you sing to the notes alone: the pitch guide and your score work as usual." />
+            </section>
+          </>
+        ) : (
           <>
             <h2 className="mt-6 mb-2 px-1 text-sm font-medium text-ink-200">Let OnKey control</h2>
             <p className="mb-3 px-1 text-xs text-ink-400">

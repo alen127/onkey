@@ -2,9 +2,10 @@
 // First-run setup: what OnKey does, the two permissions it needs (the microphone, and system audio recording to
 // hear the music app), letting it follow Spotify and Apple Music (recommended; or listen only), a quick "say
 // something" mic check, then off you go. Shown by itself until finished; reopened from the "Setup" link on the
-// waiting screen.
+// waiting screen. On Linux there's nothing to allow (PipeWire lets OnKey hear the mic and your player) and the music
+// app is whichever desktop player you use (MPRIS): those two steps say so, and list the players found.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getMics, setupControl, setupDone, setupLevel, setupMeter, setupOpenSettings, setupRequest, setupStatus, type AppPerm, type AskAnswer, type Perm, type SetupStatus } from "@/lib/session";
+import { getMics, getPlayers, onLinux, setupControl, setupDone, setupLevel, setupMeter, setupOpenSettings, setupRequest, setupStatus, type AppPerm, type AskAnswer, type Perm, type Players, type SetupStatus } from "@/lib/session";
 
 const STEPS = ["Welcome", "Permissions", "Music apps", "Mic check", "Ready"] as const;
 
@@ -38,12 +39,14 @@ export default function Setup({ onClose }: { onClose: () => void }) {
         </ol>
 
         {step === 0 && <Welcome macosOk={st?.macos_ok ?? true} onNext={() => setStep(1)} onLater={onClose} />}
-        {step === 1 && st && (
+        {step === 1 && st && onLinux() && <LinuxPermissions onNext={() => setStep(2)} />}
+        {step === 1 && st && !onLinux() && (
           <Permissions mic={st.mic} audio={audio} onAudioAllowed={() => setAudioOk(true)} refresh={refresh}
                        onNext={() => setStep(2)} canContinue={both} />
         )}
         {step === 1 && !st && <div className="h-40 rounded-2xl shimmer" />}
-        {step === 2 && <MusicApps st={st} refresh={refresh} onNext={() => setStep(3)} />}
+        {step === 2 && (onLinux() ? <LinuxPlayers onNext={() => setStep(3)} />
+          : <MusicApps st={st} refresh={refresh} onNext={() => setStep(3)} />)}
         {step === 3 && <MicCheck micOk={st?.mic === "granted"} onNext={() => setStep(4)} onBack={() => setStep(1)} />}
         {step === 4 && <Ready onFinish={finish} />}
       </div>
@@ -71,13 +74,15 @@ function Welcome({ macosOk, onNext, onLater }: { macosOk: boolean; onNext: () =>
       <p className="mt-2 text-ink-300">Learn to sing the songs you love, with the music you already play.</p>
       <ul className="mt-5 space-y-3 text-sm leading-relaxed text-ink-200">
         <Point icon="M9 18V6l11-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z">
-          Play a song in your music app, as you always do. OnKey listens to the music playing on your Mac and follows along by itself.
+          Play a song in your music app, as you always do. OnKey listens to the music playing on your {onLinux() ? "computer" : "Mac"} and follows along by itself.
         </Point>
         <Point icon="M3 14c2.5 0 2.5-6 5-6s2.5 8 5 8 2.5-10 5-10 2 4 3 4">
           The first time a song plays, OnKey learns the singer’s melody. From then on you see every note coming, and where you’re sharp or flat.
         </Point>
         <Point icon="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z">
-          OnKey never saves the music it listens to. Your singing recordings stay on this Mac so you can hear your takes back. To name a new song, listening mode sends Apple’s Shazam a short fingerprint of the music app’s sound (not the audio).
+          {onLinux()
+            ? "OnKey never saves the music it listens to. Your singing recordings stay on this computer so you can hear your takes back. Your player says what’s playing: nothing about the music is sent anywhere to name it."
+            : "OnKey never saves the music it listens to. Your singing recordings stay on this Mac so you can hear your takes back. To name a new song, listening mode sends Apple’s Shazam a short fingerprint of the music app’s sound (not the audio)."}
         </Point>
       </ul>
       {!macosOk && (
@@ -133,6 +138,66 @@ function Permissions({ mic, audio, onAudioAllowed, refresh, onNext, canContinue 
       <div className="mt-6 flex items-center justify-between">
         <Quiet onClick={onNext}>{canContinue ? "" : "Skip for now"}</Quiet>
         <Primary onClick={onNext} disabled={!canContinue}>Continue</Primary>
+      </div>
+    </>
+  );
+}
+
+/** Linux asks no permission for the mic or for hearing other apps (PipeWire). */
+function LinuxPermissions({ onNext }: { onNext: () => void }) {
+  return (
+    <>
+      <h2 className="text-2xl font-semibold tracking-tight">Nothing to allow</h2>
+      <p className="mt-2 text-sm text-ink-300">
+        On Linux OnKey hears your microphone and your music player through PipeWire, without asking. It listens only to
+        the player it follows, and never saves or sends the music.
+      </p>
+      <div className="mt-6 flex justify-end"><Primary onClick={onNext}>Continue</Primary></div>
+    </>
+  );
+}
+
+/** Linux: the music app is a desktop player that says what it plays over MPRIS (Feishin, Supersonic, Spotify, a
+ *  browser…). OnKey follows the one playing, or the one chosen in Settings, and may control it: play, pause, seek. */
+function LinuxPlayers({ onNext }: { onNext: () => void }) {
+  const [p, setP] = useState<Players | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => getPlayers().then(v => { if (alive) setP(v); }).catch(() => {});
+    load();
+    const t = setInterval(load, 2000);                 // a player opened meanwhile shows up
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const choose = async (allow: boolean) => { await setupControl(allow); onNext(); };
+  return (
+    <>
+      <h2 className="text-2xl font-semibold tracking-tight">Your music player</h2>
+      <p className="mt-3 text-sm text-ink-300">
+        OnKey follows the player that’s playing: it says what the song is and where it’s at (MPRIS), so lyrics and notes are
+        in the right place from the first second. OnKey can also play, pause and seek in it.
+      </p>
+      <div className="mt-5 space-y-2">
+        {p?.players.length ? p.players.map(pl => (
+          <div key={pl.key} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/3 px-4 py-3">
+            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-good/20 text-good" aria-hidden>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+            </span>
+            <span className="flex-1 font-medium text-ink-100">{pl.name}</span>
+            {p.following === pl.key && <span className="text-xs text-ink-400">Playing</span>}
+          </div>
+        )) : (
+          <p className="rounded-2xl border border-white/8 bg-white/3 px-4 py-3 text-sm text-ink-400">
+            No player found yet. Open yours (Feishin, Supersonic, Spotify, or a browser) and it shows up here.
+          </p>
+        )}
+      </div>
+      <p className="mt-3 text-xs leading-relaxed text-ink-500">
+        Listen only: OnKey still reads what’s playing, but never plays, pauses or seeks. Choose one player to follow in
+        Settings, if you use several.
+      </p>
+      <div className="mt-6 flex items-center justify-between">
+        <Quiet onClick={() => choose(false)}>Listen only</Quiet>
+        <Primary onClick={() => choose(true)}>Allow</Primary>
       </div>
     </>
   );
@@ -314,7 +379,7 @@ function MicCheck({ micOk, onNext, onBack }: { micOk: boolean; onNext: () => voi
       <h2 className="text-2xl font-semibold tracking-tight">Can OnKey hear you?</h2>
       <p className="mt-2 text-sm text-ink-300">
         {!micOk ? "OnKey needs the microphone first: go back to allow it."
-          : device === null ? "No microphone is connected. Connect one, or choose one in System Settings → Sound → Input."
+          : device === null ? `No microphone is connected. Connect one, or choose one in ${onLinux() ? "Settings" : "System Settings"} → Sound → Input.`
           : "Say something, or sing a note."}
       </p>
       {micOk && device && <p className="mt-1 text-xs text-ink-500">Listening to {device}. You can choose another in Settings.</p>}
