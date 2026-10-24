@@ -197,7 +197,8 @@ fn run(cmds: pw::channel::Receiver<Cmd>, ready: &mpsc::Sender<bool>) -> Result<(
     let ml = mainloop.downgrade();
     let _core_listener = core.add_listener_local()
         .error(move |id, _seq, res, message| {
-            if id == pw::core::PW_ID_CORE {
+            // (other errors, a proxy for an object just gone say, are no reason to drop the connection)
+            if id == pw::core::PW_ID_CORE && res == -libc::EPIPE {
                 crate::engine::log(&format!("PipeWire: connection error {res}: {message}"));
                 if let Some(m) = ml.upgrade() {
                     m.quit();
@@ -276,12 +277,20 @@ fn run(cmds: pw::channel::Receiver<Cmd>, ready: &mpsc::Sender<bool>) -> Result<(
         })
         .register();
 
-    // the first look at the whole graph: done when PipeWire answers this sync
-    let pending = core.sync(0)?;
+    // the first look at the whole graph: every object is announced by the time PipeWire answers one sync, and every
+    // node bound then has said its properties (its app, its state) by the answer to a second
+    let first = core.sync(0)?;
+    let second = Rc::new(std::cell::Cell::new(None));
     let ready = ready.clone();
+    let c = core.downgrade();
     let _done_listener = core.add_listener_local()
         .done(move |id, seq| {
-            if id == pw::core::PW_ID_CORE && seq == pending {
+            if id != pw::core::PW_ID_CORE {
+                return;
+            }
+            if seq == first {
+                second.set(c.upgrade().and_then(|c| c.sync(0).ok()));
+            } else if Some(seq) == second.get() {
                 GRAPH.lock().unwrap().ready = true;
                 let _ = ready.send(true);
             }
@@ -396,13 +405,14 @@ fn capture_node(core: &pw::core::CoreRc, app: App, mic: Option<String>, on_frame
         "node.dont-reconnect" => "true",
         "stream.dont-remix" => "true",
         "audio.channels" => "3",
-        "audio.position" => "FL,FR,AUX0",
+        // (the mic on the centre channel: the adapter passed an AUX channel's port through as silence)
+        "audio.position" => "FL,FR,FC",
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "onkey-capture", props)?;
     let listener = stream.add_local_listener_with_user_data(())
         .process(move |stream, _| with_samples(stream, |s| on_frames(&s[..s.len() - s.len() % 3])))
         .register()?;
-    let values = format_param(3, &[spa::sys::SPA_AUDIO_CHANNEL_FL, spa::sys::SPA_AUDIO_CHANNEL_FR, spa::sys::SPA_AUDIO_CHANNEL_AUX0]);
+    let values = format_param(3, &[spa::sys::SPA_AUDIO_CHANNEL_FL, spa::sys::SPA_AUDIO_CHANNEL_FR, spa::sys::SPA_AUDIO_CHANNEL_FC]);
     let mut params = [spa::pod::Pod::from_bytes(&values).ok_or(pw::Error::CreationFailed)?];
     stream.connect(spa::utils::Direction::Input, None,
                    pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS, &mut params)?;
@@ -442,7 +452,7 @@ fn relink(l: &mut Loop) {
 /// (output port, input port) → (output node, input node), for the capture node `me` (see `relink`).
 fn wanted(g: &Graph, me: u32, app: &App, mic: Option<&str>) -> Vec<((u32, u32), (u32, u32))> {
     let ins: HashMap<&str, u32> = g.ports.iter().filter(|(_, p)| p.node == me && !p.output).map(|(id, p)| (p.channel.as_str(), *id)).collect();
-    let (Some(&fl), Some(&fr), Some(&aux)) = (ins.get("FL"), ins.get("FR"), ins.get("AUX0")) else { return Vec::new() };
+    let (Some(&fl), Some(&fr), Some(&aux)) = (ins.get("FL"), ins.get("FR"), ins.get("FC")) else { return Vec::new() };
     let outs = |node: u32| g.ports.iter().filter(move |(_, p)| p.node == node && p.output && !p.monitor);
     let mut want = Vec::new();
     for n in g.nodes.values().filter(|n| belongs(n, app)) {
@@ -459,8 +469,12 @@ fn wanted(g: &Graph, me: u32, app: &App, mic: Option<&str>) -> Vec<((u32, u32), 
     }
     let mic = mic.map(String::from).unwrap_or_else(|| g.default_source.clone());
     if let Some(m) = g.nodes.values().find(|n| n.name == mic && n.class.starts_with("Audio/Source")) {
-        // one channel of it: a headset's mono, else the left of a stereo pair
-        let ports: Vec<(&u32, &Port)> = outs(m.id).collect();
+        // one channel of it: a headset's mono, else the left of a stereo pair (a virtual source's outputs are all
+        // monitor ports: those, when it has no others)
+        let mut ports: Vec<(&u32, &Port)> = outs(m.id).collect();
+        if ports.is_empty() {
+            ports = g.ports.iter().filter(|(_, p)| p.node == m.id && p.output).collect();
+        }
         let pick = ports.iter().find(|(_, p)| p.channel == "MONO").or_else(|| ports.iter().find(|(_, p)| p.channel == "FL")).or(ports.first());
         if let Some((id, _)) = pick {
             want.push(((**id, aux), (m.id, me)));
@@ -531,9 +545,10 @@ pub fn streams(app: &App) -> (bool, bool) {
     })
 }
 
-/// The microphones (input devices), and the default one's name.
+/// The microphones (input devices, and virtual ones such as a noise filter's), and the default one's name.
 pub fn sources() -> (Vec<Node>, String) {
-    graph(|g| (g.nodes.values().filter(|n| n.class == "Audio/Source" && !ours(n)).cloned().collect(), g.default_source.clone()))
+    graph(|g| (g.nodes.values().filter(|n| matches!(n.class.as_str(), "Audio/Source" | "Audio/Source/Virtual") && !ours(n)).cloned().collect(),
+               g.default_source.clone()))
 }
 
 /// The default output device, if known.
@@ -562,6 +577,44 @@ pub fn meter_level() -> (f32, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static HEARD: Mutex<Vec<f32>> = Mutex::new(Vec::new());
+
+    /// Live, by hand (needs PipeWire, and the app playing): captures ONKEY_LIVE_APP's streams (one of its names, as
+    /// in `App`) and the mic ONKEY_LIVE_MIC (a node name; else the default input) for 8 s, and prints each channel's
+    /// level and how far the mic runs behind the music when it hears the same sound (a loopback from the music's
+    /// output into a test mic), at the start and at the end: the same lag both times is one clock.
+    ///   cargo test --lib pw::tests::live_capture -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_capture() {
+        let app = App { pid: None, names: vec![std::env::var("ONKEY_LIVE_APP").expect("ONKEY_LIVE_APP")] };
+        let (any, running) = streams(&app);
+        eprintln!("streams: {any}, running: {running}; mics: {:?}", sources().0.iter().map(|n| &n.name).collect::<Vec<_>>());
+        assert!(capture(app, std::env::var("ONKEY_LIVE_MIC").ok(), |s| HEARD.lock().unwrap().extend_from_slice(s)));
+        std::thread::sleep(Duration::from_secs(8));
+        stop_capture();
+        let x = HEARD.lock().unwrap().clone();
+        let frames = x.len() / 3;
+        let db = |c: usize| 10.0 * (x.chunks_exact(3).map(|f| (f[c] * f[c]) as f64).sum::<f64>() / frames.max(1) as f64 + 1e-12).log10();
+        eprintln!("{frames} frames ({:.2} s at {RATE} Hz): L {:.1} dB, R {:.1} dB, mic {:.1} dB", frames as f64 / RATE as f64, db(0), db(1), db(2));
+        // the lag (frames) at which the mic best matches the music, over 1 s from `at`
+        let lag = |at: usize| -> (usize, f64) {
+            let (m, v): (Vec<f32>, Vec<f32>) = x.chunks_exact(3).map(|f| (f[0] + f[1], f[2])).unzip();
+            let n = RATE as usize;
+            (0..9600).map(|k| {
+                let (a, b) = (&m[at..at + n], &v[at + k..at + k + n]);
+                let dot: f64 = a.iter().zip(b).map(|(p, q)| (*p * *q) as f64).sum();
+                let norm = (a.iter().map(|p| (*p * *p) as f64).sum::<f64>() * b.iter().map(|q| (*q * *q) as f64).sum::<f64>()).sqrt();
+                (k, dot / (norm + 1e-12))
+            }).fold((0, f64::MIN), |best, c| if c.1 > best.1 { c } else { best })
+        };
+        if frames > 4 * RATE as usize && db(2) > -90.0 {
+            let (first, last) = (lag(RATE as usize / 2), lag(frames - 2 * RATE as usize - 9600));
+            eprintln!("mic behind music: {} frames (correlation {:.3}) at the start, {} frames ({:.3}) at the end", first.0, first.1, last.0, last.1);
+        }
+        assert!(frames > 6 * RATE as usize, "audio kept coming");
+    }
 
     fn stream(id: u32, app_name: &str, binary: &str, app_id: &str, pid: Option<u32>) -> Node {
         Node { id, class: "Stream/Output/Audio".into(), app_name: app_name.into(), binary: binary.into(), app_id: app_id.into(), pid, ..Default::default() }
@@ -594,7 +647,7 @@ mod tests {
         g.nodes.insert(30, Node { id: 30, class: "Audio/Source".into(), name: "mic".into(), ..Default::default() });
         g.default_source = "mic".into();
         let port = |node, output, channel: &str| Port { node, output, channel: channel.into(), monitor: false };
-        for (id, p) in [(100, port(me, false, "FL")), (101, port(me, false, "FR")), (102, port(me, false, "AUX0")),
+        for (id, p) in [(100, port(me, false, "FL")), (101, port(me, false, "FR")), (102, port(me, false, "FC")),
                         (200, port(20, true, "FL")), (201, port(20, true, "FR")), (210, port(21, true, "MONO")),
                         (300, port(30, true, "FL")), (301, port(30, true, "FR"))] {
             g.ports.insert(id, p);
@@ -607,6 +660,10 @@ mod tests {
         let mut w: Vec<(u32, u32)> = wanted(&g, me, &mono, Some("mic")).into_iter().map(|(k, _)| k).collect();
         w.sort();
         assert_eq!(w, vec![(210, 100), (210, 101), (300, 102)]);
+        // a virtual source (a filter's, a null sink's): its outputs are monitor ports
+        g.nodes.insert(31, Node { id: 31, class: "Audio/Source/Virtual".into(), name: "filtered".into(), ..Default::default() });
+        g.ports.insert(310, Port { monitor: true, ..port(31, true, "FL") });
+        assert!(wanted(&g, me, &app, Some("filtered")).iter().any(|(k, _)| *k == (310, 102)));
         // no such mic: the music alone
         assert_eq!(wanted(&g, me, &app, Some("gone")).len(), 2);
         // before the node's own ports are there: nothing
