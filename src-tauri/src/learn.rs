@@ -184,6 +184,11 @@ pub fn lower_priority() {
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
     }
+    // Linux: a nicer thread (each thread has its own niceness there; threads it starts inherit it)
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10);
+    }
 }
 
 /// A turn to separate (see `SEPARATING_AT_ONCE`), given back when dropped.

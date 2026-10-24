@@ -1,22 +1,117 @@
 //! Your voice in each take: takes/<time>-<song>/mic.m4a, AAC (mono, ~64 kbps, about 0.5 MB a minute), encoded
 //! by macOS itself (native/audiofile.swift: Audio Toolbox's ExtAudioFile; no third-party encoder). Takes saved
 //! before were 16-bit WAV (mic.wav, 5.8 MB a minute): they're converted once, in the background (`start`), and
-//! every reader takes either (`recording`).
+//! every reader takes either (`recording`). On Linux ffmpeg encodes and decodes them (`linux` below; Fedora's has its
+//! own AAC encoder), with the same results.
 //!
 //! Kept: every take's recording, under a safety cap of `AUDIO_CAP` for all of them together (`retain`): past it the
 //! oldest takes' recordings go first, never a favourite song's or a song's best take (the scores stay in History).
-use std::ffi::{c_char, CString};
+#[cfg(target_os = "macos")]
+use std::ffi::c_char;
+use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
 
+#[cfg(target_os = "macos")]
 extern "C" {
     fn onkey_aac_write(samples: *const i16, frames: i64, rate: f64, path: *const c_char) -> i32;
     fn onkey_aac_convert(src: *const c_char, dst: *const c_char) -> i32;
     fn onkey_audio_decode(path: *const c_char, out: *mut f32, cap: i64, frames: *mut i64, rate: *mut f64, channels: *mut i32) -> i32;
 }
+
+/// Linux: the Swift bridge's three calls, by ffmpeg and ffprobe (on Bluefin and Fedora's desktops already). Their
+/// errors are a nonzero status, as Core Audio's are.
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::missing_safety_doc)]
+mod linux {
+    use std::ffi::{c_char, CStr};
+    use std::io::{Read, Write};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    /// What ffmpeg's run failed with (nonzero, for `core_audio`'s message).
+    const FAILED: i32 = 1;
+
+    /// AAC-LC at the take's rate when that's a standard one up to 48 kHz, else 48 kHz (as audiofile.swift `aacRate`).
+    fn aac_rate(rate: f64) -> u32 {
+        const STANDARD: [u32; 9] = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
+        STANDARD.into_iter().find(|r| *r as f64 == rate).or_else(|| STANDARD.into_iter().find(|r| *r as f64 >= rate)).unwrap_or(48_000)
+    }
+
+    fn ffmpeg() -> Command {
+        let mut c = Command::new("ffmpeg");
+        c.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"]);
+        c
+    }
+
+    /// Mono AAC, ~64 kbps, in an .m4a (named by `-f`: the file being written has a temp name).
+    fn aac_out(c: &mut Command, rate: f64, dst: &Path) {
+        c.args(["-ac", "1", "-c:a", "aac", "-b:a", "64k", "-ar"]).arg(aac_rate(rate).to_string())
+            .args(["-movflags", "+faststart", "-f", "ipod"]).arg(dst);
+    }
+
+    fn path(p: *const c_char) -> std::path::PathBuf {
+        std::path::PathBuf::from(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+    }
+
+    pub unsafe fn onkey_aac_write(samples: *const i16, frames: i64, rate: f64, dst: *const c_char) -> i32 {
+        let pcm: Vec<u8> = std::slice::from_raw_parts(samples, frames.max(0) as usize).iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut c = ffmpeg();
+        c.args(["-f", "s16le", "-ar"]).arg(format!("{}", rate.round() as u32)).args(["-ac", "1", "-i", "pipe:0"]);
+        aac_out(&mut c, rate, &path(dst));
+        let Ok(mut child) = c.stdin(Stdio::piped()).stdout(Stdio::null()).spawn() else { return FAILED };
+        let fed = child.stdin.take().is_some_and(|mut i| i.write_all(&pcm).is_ok());
+        if child.wait().is_ok_and(|s| s.success()) && fed { 0 } else { FAILED }
+    }
+
+    pub unsafe fn onkey_aac_convert(src: *const c_char, dst: *const c_char) -> i32 {
+        let src = path(src);
+        let Some((rate, _)) = probe(&src) else { return FAILED };
+        let mut c = ffmpeg();
+        c.arg("-i").arg(&src);
+        aac_out(&mut c, rate, &path(dst));
+        if c.stdout(Stdio::null()).status().is_ok_and(|s| s.success()) { 0 } else { FAILED }
+    }
+
+    /// The file's first audio stream: its rate and channels.
+    fn probe(p: &Path) -> Option<(f64, i32)> {
+        let o = Command::new("ffprobe").args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels",
+                                              "-of", "csv=p=0"]).arg(p).output().ok().filter(|o| o.status.success())?;
+        let out = String::from_utf8_lossy(&o.stdout);
+        let (rate, ch) = out.trim().split_once(',')?;
+        Some((rate.trim().parse().ok()?, ch.trim().parse().ok()?))
+    }
+
+    /// Decodes all of `src` mixed to mono: its length (frames), rate and channels; the samples into `out`, up to
+    /// `cap` of them (none with a null `out`).
+    pub unsafe fn onkey_audio_decode(src: *const c_char, out: *mut f32, cap: i64, frames: *mut i64, rate: *mut f64, channels: *mut i32) -> i32 {
+        let src = path(src);
+        let Some((r, ch)) = probe(&src) else { return FAILED };
+        let Ok(mut child) = ffmpeg().arg("-i").arg(&src).args(["-ac", "1", "-f", "f32le", "pipe:1"])
+            .stdout(Stdio::piped()).spawn() else { return FAILED };
+        let mut pcm = Vec::new();
+        let read = child.stdout.take().is_some_and(|mut o| o.read_to_end(&mut pcm).is_ok());
+        if !(child.wait().is_ok_and(|s| s.success()) && read) {
+            return FAILED;
+        }
+        let n = pcm.len() / 4;
+        if !out.is_null() {
+            let dst = std::slice::from_raw_parts_mut(out, (cap.max(0) as usize).min(n));
+            for (d, b) in dst.iter_mut().zip(pcm.chunks_exact(4)) {
+                *d = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            }
+        }
+        *frames = if out.is_null() { n as i64 } else { (cap.max(0) as usize).min(n) as i64 };
+        *rate = r;
+        *channels = ch;
+        0
+    }
+}
+#[cfg(not(target_os = "macos"))]
+use linux::*;
 
 /// A take's recording, as saved now.
 pub const M4A: &str = "mic.m4a";
@@ -188,8 +283,13 @@ fn quiet() -> bool {
 /// (the ones most likely played back). Progress goes to the log. Then the recordings are kept under their cap.
 pub fn start(data: PathBuf) {
     std::thread::Builder::new().name("onkey-take-audio".into()).spawn(move || {
+        #[cfg(target_os = "macos")]
         unsafe {
             libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
+        }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 19);
         }
         std::thread::sleep(AFTER_LAUNCH);
         let mut todo: Vec<PathBuf> = take_dirs(&data);

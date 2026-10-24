@@ -41,6 +41,7 @@ pub fn keep_by_default() -> bool {
 }
 
 /// The Mac's physical memory in bytes (sysctl hw.memsize), if it can be read.
+#[cfg(target_os = "macos")]
 pub fn physical_memory() -> Option<u64> {
     let mut size: u64 = 0;
     let mut len = std::mem::size_of::<u64>();
@@ -48,6 +49,13 @@ pub fn physical_memory() -> Option<u64> {
         libc::sysctlbyname(c"hw.memsize".as_ptr(), &mut size as *mut u64 as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0)
     };
     (r == 0 && len == std::mem::size_of::<u64>()).then_some(size)
+}
+
+/// The computer's physical memory in bytes (its pages times their size), if it can be read.
+#[cfg(not(target_os = "macos"))]
+pub fn physical_memory() -> Option<u64> {
+    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+    (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
 }
 
 #[cfg(test)]

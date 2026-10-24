@@ -12,11 +12,24 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+#[cfg(target_os = "macos")]
 extern "C" {
     fn onkey_share_render(json: *const std::os::raw::c_char, audio: *const std::os::raw::c_char, out: *const std::os::raw::c_char,
                           icon: *const u8, icon_len: i64) -> i32;
     fn onkey_media_tracks(path: *const std::os::raw::c_char) -> i32;
 }
+
+/// Off macOS there's no share.swift to draw the video (sharing isn't offered: lib.rs `settings_now`); these answer
+/// that it can't be made.
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::missing_safety_doc)]
+mod no_video {
+    use std::os::raw::c_char;
+    pub unsafe fn onkey_share_render(_json: *const c_char, _audio: *const c_char, _out: *const c_char, _icon: *const u8, _icon_len: i64) -> i32 { -1 }
+    pub unsafe fn onkey_media_tracks(_path: *const c_char) -> i32 { -1 }
+}
+#[cfg(not(target_os = "macos"))]
+use no_video::*;
 
 /// How long a clip is (s).
 pub const CLIP_S: f64 = 20.0;
@@ -182,6 +195,9 @@ fn out_path(dir: &Path, song: &str, start: i64) -> PathBuf {
 /// Renders the clip from song second `start` of the take in `take_dir` (its result as `r`) into `dir`: the new
 /// file's path.
 pub fn render(r: &Value, take_dir: &Path, start: i64, dir: &Path) -> Result<PathBuf, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("sharing a take as a video is only on macOS for now".into());
+    }
     let take = Take::from_result(r).ok_or("this take has no place in the song to start a clip from")?;
     let title = r["track"]["name"].as_str().unwrap_or("");
     let artist = r["track"]["artist"].as_str().unwrap_or("");
@@ -267,6 +283,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn a_clip_renders_to_a_video_with_its_voice() {
         // a short take: 3 s long, a tone as the voice, rendered for real (AVFoundation)
         let dir = std::env::temp_dir().join(format!("onkey-share-test-{}", std::process::id()));

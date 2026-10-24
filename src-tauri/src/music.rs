@@ -83,7 +83,7 @@ static COVERS: Mutex<Option<HashMap<String, Option<Cover>>>> = Mutex::new(None);
 
 /// The cover for a playing track if already found; otherwise starts looking it up in the background (the
 /// state is read every 0.4 s and must not wait on the network).
-fn cover_cached(id: &str, artist: &str, name: &str) -> Option<Cover> {
+pub fn cover_cached(id: &str, artist: &str, name: &str) -> Option<Cover> {
     let mut covers = COVERS.lock().unwrap();
     let covers = covers.get_or_insert_with(HashMap::new);
     if let Some(c) = covers.get(id) {
@@ -145,7 +145,12 @@ pub fn in_store(page: &str, region: Option<&str>) -> String {
 /// The Mac's region (System Settings → General → Language & Region), as Apple Music's store code ("gb"). Read on
 /// the Mac only: nothing about it is sent anywhere.
 pub fn region() -> Option<String> {
+    #[cfg(target_os = "macos")]
     let cc = objc2_foundation::NSLocale::currentLocale().countryCode()?.to_string().to_ascii_lowercase();
+    // Linux: the locale's territory ("en_GB.UTF-8" → "gb")
+    #[cfg(not(target_os = "macos"))]
+    let cc = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty())?
+        .split(['.', '@']).next()?.split_once('_')?.1.to_ascii_lowercase();
     (cc.len() == 2).then_some(cc)
 }
 

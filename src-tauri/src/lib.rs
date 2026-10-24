@@ -15,6 +15,12 @@ pub mod listen;
 pub mod lowmem;
 pub mod lyrics;
 pub mod models;
+// desktop players over MPRIS (Linux; none elsewhere)
+#[cfg(target_os = "linux")]
+pub mod mpris;
+#[cfg(not(target_os = "linux"))]
+#[path = "mpris_none.rs"]
+pub mod mpris;
 pub mod lyrics_align;
 pub mod mdx;
 pub mod music;
@@ -23,6 +29,9 @@ pub mod notes;
 pub mod permissions;
 pub mod pitch;
 pub mod progress;
+// PipeWire: audio capture on Linux (capture.rs)
+#[cfg(target_os = "linux")]
+pub mod pw;
 pub mod recognize;
 pub mod records;
 pub mod report;
@@ -47,6 +56,20 @@ use serde_json::Value;
 use tauri::{Manager, State};
 
 type Shared = Arc<Mutex<engine::Shared>>;
+
+/// macOS's `open` (a link, a folder, an app's own link): xdg-open on Linux.
+fn open_cmd() -> std::process::Command {
+    std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" })
+}
+
+/// A file selected in Finder (`open -R`); on Linux the folder it's in is opened.
+fn reveal(path: &std::path::Path) {
+    if cfg!(target_os = "macos") {
+        let _ = std::process::Command::new("open").arg("-R").arg(path).status();
+    } else if let Some(dir) = path.parent() {
+        let _ = open_cmd().arg(dir).status();
+    }
+}
 
 /// The app whose music OnKey follows: in listening mode, the one playing sound (whatever a song's id says).
 fn following() -> source::Source {
@@ -118,7 +141,10 @@ fn open_in_app(id: String, store: State<store::Store>) {
     if pick.app == source::Source::YouTube {
         listen::youtube_used();         // you'll play it in your browser: its sound is listened to for a while
     }
-    let _ = std::process::Command::new("open").arg(open_url(&pick, track.as_ref(), music::region().as_deref())).status();
+    let url = open_url(&pick, track.as_ref(), music::region().as_deref());
+    if !url.is_empty() {
+        let _ = open_cmd().arg(url).status();
+    }
 }
 
 /// The app a song opens in ("Spotify", "Apple Music", "YouTube"), for its "in Spotify ↗" link.
@@ -141,6 +167,8 @@ fn open_url(pick: &store::Pick, track: Option<&source::Track>, region: Option<&s
             None => format!("music://music.apple.com/search?term={q}"),
         },
         (source::Source::Spotify | source::Source::Other, _) => format!("spotify:search:{q}"),
+        // a desktop player can't be told what to open (MPRIS has no search): nothing to open
+        (source::Source::Mpris, _) => String::new(),
     }
 }
 
@@ -149,7 +177,7 @@ fn open_url(pick: &store::Pick, track: Option<&source::Track>, region: Option<&s
 fn allow_control(key: String) {
     match key.as_str() {
         "youtube" => youtube::set_enabled(true),
-        "control_spotify" | "control_music" => settings::set(&key, true),
+        "control_spotify" | "control_music" | "control_mpris" => settings::set(&key, true),
         _ => {}
     }
 }
@@ -158,6 +186,11 @@ fn allow_control(key: String) {
 /// had to start), whenever the track's app does, hide it again (it keeps playing) and give OnKey back the focus.
 fn keep_in_front(window: tauri::WebviewWindow, app: source::Source) {
     let Some(bundle) = app.app_bundle() else { return };   // YouTube is opened in the background
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, bundle);
+    }
+    #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
         // checked every 15 ms for the first 2 s (so it's hidden before it has fully appeared), then every 100 ms
         for i in 0..150 {
@@ -309,7 +342,10 @@ fn dev_copy(text: String) -> bool {
 /// `text` on the clipboard.
 fn copy_to_clipboard(text: &str) -> bool {
     use std::io::Write;
-    let Ok(mut c) = std::process::Command::new("/usr/bin/pbcopy").stdin(std::process::Stdio::piped()).spawn() else { return false };
+    // (Wayland's wl-copy on Linux, X11's xclip without it)
+    let tools: &[(&str, &[&str])] = if cfg!(target_os = "macos") { &[("/usr/bin/pbcopy", &[])] }
+        else { &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])] };
+    let Some(mut c) = tools.iter().find_map(|(t, args)| std::process::Command::new(t).args(*args).stdin(std::process::Stdio::piped()).spawn().ok()) else { return false };
     let ok = c.stdin.take().is_some_and(|mut i| i.write_all(text.as_bytes()).is_ok());
     ok && c.wait().is_ok_and(|s| s.success())
 }
@@ -344,7 +380,7 @@ fn set_youtube(on: bool) {
 /// A setting saved across restarts (see settings.rs for the keys).
 #[tauri::command]
 fn set_setting(key: String, on: bool) {
-    if matches!(key.as_str(), "listening" | "control_spotify" | "control_music" | "hide_starters" | "shazam" | "show_lyrics") {
+    if matches!(key.as_str(), "listening" | "control_spotify" | "control_music" | "control_mpris" | "hide_starters" | "shazam" | "show_lyrics") {
         settings::set(&key, on);
     }
     if key == "battery_30fps" || key == "voice_breaks" {
@@ -414,7 +450,23 @@ fn settings_now() -> Value {
         "hide_starters": settings::get("hide_starters"), "shazam": settings::shazam(), "show_lyrics": settings::show_lyrics(),
         "keep_models": lowmem::keep_learning_models(), "keep_models_default": lowmem::keep_by_default(), "small_mac": lowmem::low_memory(),
         "battery_30fps": settings::get_opt("battery_30fps").unwrap_or(true),
-        "voice_breaks": settings::get_opt("voice_breaks").unwrap_or(true)})
+        "voice_breaks": settings::get_opt("voice_breaks").unwrap_or(true),
+        "platform": std::env::consts::OS, "control_mpris": settings::control("control_mpris"),
+        "share": cfg!(target_os = "macos"), "updates": cfg!(target_os = "macos")})
+}
+
+/// The desktop players there now (Linux, MPRIS) and the one chosen to follow (null: whichever plays).
+#[tauri::command(async)]
+fn players() -> Value {
+    let list: Vec<Value> = mpris::players().iter().map(|p| serde_json::json!({"key": p.key(), "name": p.identity})).collect();
+    serde_json::json!({"players": list, "chosen": mpris::chosen(), "following": listen::want_bundle().map(mpris::key)})
+}
+
+/// Follow this player only (its key from `players`), or whichever plays (null).
+#[tauri::command(async)]
+fn set_player(key: Option<String>) {
+    let key = key.filter(|k| !k.is_empty() && k.len() <= 256);
+    settings::set_value(mpris::SETTING, key.map_or(Value::Null, Value::String));
 }
 
 #[tauri::command]
@@ -513,7 +565,7 @@ fn share_take(id: String, start: i64, store: State<store::Store>) -> Result<Valu
     let path = share::render(&r, &dir, start, &downloads)?;
     engine::log(&format!("share video of {} from {}: {} in {:.1} s", r["track"]["name"].as_str().unwrap_or("?"),
                          share::clock(start), path.display(), t.elapsed().as_secs_f64()));
-    let _ = std::process::Command::new("open").arg("-R").arg(&path).status();
+    reveal(&path);
     copy_to_clipboard(&share::clock(start));
     Ok(serde_json::json!({"path": path.to_string_lossy(), "at": share::clock(start)}))
 }
@@ -534,7 +586,7 @@ fn open_link(url: String) {
         // a Spotify link opens the Spotify app, which OnKey hears (open.spotify.com opened the web player in the
         // browser, which it doesn't); the web page only when the app isn't there
         if let Some(app) = music::spotify_app_link(&url) {
-            if std::process::Command::new("open").arg(&app).status().is_ok_and(|s| s.success()) {
+            if open_cmd().arg(&app).status().is_ok_and(|s| s.success()) {
                 return;
             }
         }
@@ -542,13 +594,13 @@ fn open_link(url: String) {
         // gives US-store pages); the web page, in that store too, only if the app doesn't open
         if music::apple_music_link(&url).is_some() {
             let [app, web] = music::apple_music_opens(&url, music::region().as_deref());
-            if std::process::Command::new("open").arg(&app).status().is_ok_and(|s| s.success()) {
+            if open_cmd().arg(&app).status().is_ok_and(|s| s.success()) {
                 return;
             }
-            let _ = std::process::Command::new("open").arg(web).status();
+            let _ = open_cmd().arg(web).status();
             return;
         }
-        let _ = std::process::Command::new("open").arg(url).status();
+        let _ = open_cmd().arg(url).status();
     }
 }
 
@@ -610,7 +662,7 @@ fn report_save(description: String, app: tauri::AppHandle) -> Result<Option<Stri
 #[tauri::command(async)]
 fn report_open_folder() {
     if let Some(d) = report::staged() {
-        let _ = std::process::Command::new("open").arg(d).status();
+        let _ = open_cmd().arg(d).status();
     }
 }
 
@@ -620,7 +672,7 @@ fn report_show(path: String) {
     let home = std::env::var("HOME").unwrap_or_default();
     let p = std::path::PathBuf::from(path.replacen('~', &home, 1));
     if p.extension().is_some_and(|x| x == "zip") && p.exists() {
-        let _ = std::process::Command::new("open").arg("-R").arg(p).status();
+        reveal(&p);
     }
 }
 
@@ -633,7 +685,7 @@ fn report_issue(take: Option<String>) {
     let version = format!("{} ({})", b["version"].as_str().unwrap_or("?"), b["sha"].as_str().unwrap_or("?"));
     let url = format!("{}?template=bug.yml&title={}&version={}", report::NEW_ISSUE_URL,
                       urlencoding::encode(title), urlencoding::encode(&version));
-    let _ = std::process::Command::new("open").arg(url).status();
+    let _ = open_cmd().arg(url).status();
 }
 
 /// Errors from the window, into the engine's log (so problems in the interface are visible too).
@@ -702,6 +754,9 @@ fn window_buttons(window: &tauri::WebviewWindow, visible: bool) -> Result<(), St
 
 #[tauri::command(async)]
 fn open_privacy_settings() {
+    if !cfg!(target_os = "macos") {
+        return;         // (nothing to allow on Linux)
+    }
     let _ = std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture").status();
 }
@@ -801,7 +856,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![catch_up, player_control, play_track, set_blind, takes, library, take, take_audio, share_window, share_take, open_privacy_settings, ui_log, ui_moving, skip_to, set_mini, forget_song, stop_learning, learn_anyway, delete_take, set_echo_cancel, set_youtube, set_setting, settings_now, allow_control, open_in_app, along_mode, join_along, finish_take, play_along, stop_play_along, player_now, dev_tools, dev_copy, rename_track, take_playing,
-            setup_status, setup_request, setup_open_settings, setup_meter, setup_level, setup_done, setup_control, third_party_notices, perf_frames, report_prepare, report_save, report_open_folder, report_show, report_issue, open_link, starter_cover, set_favorite, is_favorite, open_app, mics, set_mic, output_timing, output_timing_check, output_timing_reset, output_timing_dismiss,
+            setup_status, setup_request, setup_open_settings, setup_meter, setup_level, setup_done, setup_control, third_party_notices, perf_frames, report_prepare, report_save, report_open_folder, report_show, report_issue, open_link, starter_cover, set_favorite, is_favorite, open_app, mics, set_mic, players, set_player, output_timing, output_timing_check, output_timing_reset, output_timing_dismiss,
             update_status, update_check, update_set_auto, update_restart])
         .setup(move |app| {
             // the records first: this log session starts with the build and the Mac (records.rs)

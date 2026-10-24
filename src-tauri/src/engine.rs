@@ -444,8 +444,14 @@ fn on_battery() -> bool {
         CFRelease(info);
         ok && std::ffi::CStr::from_ptr(buf.as_ptr()).to_bytes() == b"Battery Power"
     }
+    // Linux: a mains supply that's there and not plugged in (a desktop has none, or one that's online)
     #[cfg(not(target_os = "macos"))]
-    false
+    {
+        let supplies = std::fs::read_dir("/sys/class/power_supply").into_iter().flatten().flatten();
+        let mains: Vec<String> = supplies.filter(|d| std::fs::read_to_string(d.path().join("type")).is_ok_and(|t| t.trim() == "Mains"))
+            .filter_map(|d| std::fs::read_to_string(d.path().join("online")).ok()).collect();
+        !mains.is_empty() && mains.iter().all(|o| o.trim() == "0")
+    }
 }
 
 /// The lane draws at most 30 times a second: Low Power Mode, or on battery unless Settings says otherwise

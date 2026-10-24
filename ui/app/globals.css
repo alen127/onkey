@@ -55,8 +55,9 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 }
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* inside the desktop app the title bar is transparent: leave room for the window buttons, drag by the header */
-html.in-app .app-header { padding-left: 88px; }
+/* inside the desktop app the title bar is transparent: leave room for the window buttons, drag by the header (on
+   Linux the window has its own title bar) */
+html.in-app:not(.linux) .app-header { padding-left: 88px; }
 
 /* mini mode: the window is transparent around a rounded card */
 html.mini, html.mini body { background: transparent; }

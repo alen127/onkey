@@ -399,6 +399,25 @@ pub fn ask_where(app: &tauri::AppHandle) -> Option<PathBuf> {
     rx.recv().ok().flatten()
 }
 
+/// Where to save it, on Linux: GNOME's save dialog through zenity, starting at ~/Desktop/OnKey-report-<date>.zip
+/// (or your Downloads folder, the desktop's own name for it, without zenity). None: cancelled.
+#[cfg(not(target_os = "macos"))]
+pub fn ask_where(_app: &tauri::AppHandle) -> Option<PathBuf> {
+    let name = format!("OnKey-report-{}.zip", crate::store::format_time(std::time::SystemTime::now(), "%Y-%m-%d"));
+    let home = PathBuf::from(std::env::var("HOME").ok()?);
+    let folder = |which: &str, or: &str| std::process::Command::new("xdg-user-dir").arg(which).output().ok()
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())).filter(|p| p.is_dir() && *p != home)
+        .unwrap_or_else(|| home.join(or));
+    let start = folder("DESKTOP", "Desktop").join(&name);
+    match std::process::Command::new("zenity").args(["--file-selection", "--save", "--confirm-overwrite",
+            "--title=Save OnKey's records for a bug report (logs and numbers, no lyrics or audio)"])
+        .arg(format!("--filename={}", start.display())).output() {
+        Ok(o) if o.status.success() => Some(PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())).filter(|p| !p.as_os_str().is_empty()),
+        Ok(_) => None,
+        Err(_) => Some(folder("DOWNLOAD", "Downloads").join(name)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

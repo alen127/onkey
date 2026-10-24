@@ -59,6 +59,7 @@ fn r1(x: f64) -> f64 {
 
 // ---------------------------------------------------------------- which build, which Mac
 
+#[cfg(target_os = "macos")]
 fn sysctl_str(name: &str) -> Option<String> {
     let c = std::ffi::CString::new(name).ok()?;
     let mut len = 0usize;
@@ -73,6 +74,20 @@ fn sysctl_str(name: &str) -> Option<String> {
         buf.truncate(len);
         Some(String::from_utf8_lossy(&buf).trim_end_matches('\0').trim().to_string()).filter(|s| !s.is_empty())
     }
+}
+
+/// Linux has no sysctl names for these: the same answers from where Linux keeps them (the firmware's product name,
+/// the CPU's, the system's release).
+#[cfg(not(target_os = "macos"))]
+fn sysctl_str(name: &str) -> Option<String> {
+    let read = |p: &str| std::fs::read_to_string(p).ok();
+    let v = match name {
+        "hw.model" => read("/sys/class/dmi/id/product_name")?.trim().to_string(),
+        "machdep.cpu.brand_string" => read("/proc/cpuinfo")?.lines().find(|l| l.starts_with("model name"))?.split_once(':')?.1.trim().to_string(),
+        "kern.osproductversion" => read("/etc/os-release")?.lines().find_map(|l| l.strip_prefix("PRETTY_NAME="))?.trim_matches('"').to_string(),
+        _ => return None,
+    };
+    Some(v).filter(|s| !s.is_empty())
 }
 
 /// This build: version, commit and when that commit was made.
@@ -286,10 +301,19 @@ fn cpu_seconds() -> f64 {
 }
 
 /// OnKey's memory as Activity Monitor shows it (the physical footprint), MB.
+#[cfg(target_os = "macos")]
 pub fn footprint_mb() -> f64 {
     let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
     let r = unsafe { libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, &mut ri as *mut _ as *mut libc::rusage_info_t) };
     if r == 0 { ri.ri_phys_footprint as f64 / 1e6 } else { 0.0 }
+}
+
+/// OnKey's memory on Linux: what it has resident (/proc/self/statm), MB.
+#[cfg(not(target_os = "macos"))]
+pub fn footprint_mb() -> f64 {
+    let pages = std::fs::read_to_string("/proc/self/statm").ok()
+        .and_then(|s| s.split_whitespace().nth(1).and_then(|p| p.parse::<f64>().ok())).unwrap_or(0.0);
+    pages * unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as f64 / 1e6
 }
 
 fn sampler() {
