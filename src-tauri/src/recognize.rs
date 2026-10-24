@@ -18,6 +18,7 @@ use crate::dsp::{locate, onset_envelope, FP_BANDS, FRAME_S, LOCATE_MIN_FRAMES};
 use crate::source::Track;
 use crate::store::Store;
 
+#[cfg(target_os = "macos")]
 extern "C" {
     fn onkey_shz_signature(x: *const f32, n: i32, rate: f64, out_len: *mut i32) -> *mut u8;
     fn onkey_shz_free(p: *mut u8);
@@ -29,6 +30,25 @@ extern "C" {
     fn onkey_shz_shazam_poll(ticket: i32, out: *mut c_char, cap: i32) -> i32;
     fn onkey_shz_shazam_forget(ticket: i32);
 }
+
+/// No ShazamKit off macOS: no signatures (so no catalog of learned songs by them: `Fingerprints` finds those) and
+/// no requests to Shazam (`ShazamCatalog` is never available). The same calls as the Swift bridge's, answering so.
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::missing_safety_doc)]
+mod no_shazam {
+    use std::ffi::c_char;
+    pub unsafe fn onkey_shz_signature(_x: *const f32, _n: i32, _rate: f64, _out_len: *mut i32) -> *mut u8 { std::ptr::null_mut() }
+    pub unsafe fn onkey_shz_free(_p: *mut u8) {}
+    pub unsafe fn onkey_shz_catalog_new() -> i32 { 0 }
+    pub unsafe fn onkey_shz_catalog_free(_h: i32) {}
+    pub unsafe fn onkey_shz_catalog_add(_h: i32, _sig: *const u8, _len: i32, _id: *const c_char) -> i32 { -1 }
+    pub unsafe fn onkey_shz_match(_h: i32, _sig: *const u8, _len: i32, _out_id: *mut c_char, _cap: i32, _out_offset: *mut f64) -> i32 { 0 }
+    pub unsafe fn onkey_shz_shazam_begin(_sig: *const u8, _len: i32) -> i32 { 0 }
+    pub unsafe fn onkey_shz_shazam_poll(_ticket: i32, _out: *mut c_char, _cap: i32) -> i32 { -3 }
+    pub unsafe fn onkey_shz_shazam_forget(_ticket: i32) {}
+}
+#[cfg(not(target_os = "macos"))]
+use no_shazam::*;
 
 pub const SR: usize = 16_000;
 
@@ -456,7 +476,7 @@ impl Default for ShazamCatalog<Apple> {
 
 impl<S: ShazamService> ShazamCatalog<S> {
     pub fn with(svc: S) -> ShazamCatalog<S> {
-        ShazamCatalog { available: std::env::var("ONKEY_NO_SHAZAM").is_err(), backoff: Backoff::default(), svc,
+        ShazamCatalog { available: std::env::var("ONKEY_NO_SHAZAM").is_err() && cfg!(target_os = "macos"), backoff: Backoff::default(), svc,
                         open: Vec::new(), unanswered_since: None, answers: 0, say: Box::new(crate::engine::log),
                         allowed: Box::new(|| Ask::Yes) }
     }
