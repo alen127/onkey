@@ -949,6 +949,8 @@ const WEBKIT: &str = "com.apple.WebKit.GPU";
 pub fn allowed(bundle: &str, youtube: bool, take_playing: bool, separable: bool) -> bool {
     match bundle {
         "com.spotify.client" | "com.apple.Music" => true,
+        // a desktop player on Linux (MPRIS): a music app, as Spotify and Apple Music are
+        b if b.starts_with(crate::mpris::BUS_PREFIX) => true,
         WEBKIT if take_playing && !separable => false,
         b => youtube && APPS.iter().any(|(a, _)| *a == b),
     }
@@ -984,7 +986,8 @@ pub fn may_listen(bundle: &str) -> bool {
 /// and whether turning YouTube on would let OnKey sing along to it (in any browser when listening; else only those
 /// whose YouTube tab it can follow). For the window's hint to turn YouTube on. Core Audio only, no AppleScript.
 pub fn browser_unheard() -> Option<(&'static str, bool)> {
-    if youtube_in_use() {
+    // (on Linux a browser is a player like any other: listened to when it plays, through MPRIS)
+    if youtube_in_use() || cfg!(target_os = "linux") {
         return None;
     }
     // (OnKey's own window plays through WebKit too: not Safari while a take plays back, unless told apart)
@@ -1006,12 +1009,16 @@ pub fn source_of(bundle: &str) -> Source {
     match bundle {
         "com.spotify.client" => Source::Spotify,
         "com.apple.Music" => Source::Music,
+        b if b.starts_with(crate::mpris::BUS_PREFIX) => Source::Mpris,
         b if crate::youtube::browser_for_audio(b).is_some() => Source::YouTube,
         _ => Source::Other,
     }
 }
 
 pub fn app_name(bundle: &str) -> &'static str {
+    if bundle.starts_with(crate::mpris::BUS_PREFIX) {
+        return crate::mpris::name(bundle);
+    }
     APPS.iter().find(|(b, _)| *b == bundle).map_or("your music app", |(_, n)| n)
 }
 
@@ -1022,6 +1029,10 @@ pub fn sounding(prefer: Option<&str>) -> Option<&'static str> {
     if let Some(on) = crate::devtest::sim_sounding() {
         let _ = crate::capture::app_sounding(APPS[0].0);      // (what the real look costs)
         return on.then_some(APPS[0].0);
+    }
+    // Linux: the desktop player playing (MPRIS), one whose sound is here first
+    if cfg!(target_os = "linux") {
+        return crate::mpris::sounding(prefer);
     }
     if let Some(p) = prefer {
         if let Some((b, _)) = APPS.iter().find(|(b, _)| *b == p) {
@@ -1178,6 +1189,10 @@ pub fn status_line() -> Option<(&'static str, String)> {
     if std::env::var("ONKEY_NO_SHAZAM").is_ok() && st.0 != "unnamed" {
         return Some(("no_shazam", "Shazam unavailable: only songs learned here are recognised".into()));
     }
+    // no ShazamKit on Linux: a song is named by your player (MPRIS), or by its sound once it's learned here
+    if cfg!(target_os = "linux") && matches!(st.0, "unnamed" | "no_shazam") {
+        return Some(("no_shazam", "Not a song learned here, and your player didn't say what's playing (no Shazam on Linux)".into()));
+    }
     // switched off in Settings: a song not learned here is never named, and that's why
     if !crate::settings::shazam() && matches!(st.0, "unnamed" | "no_shazam") {
         return Some(("shazam_off", "Not a song learned here: Shazam is off in Settings".into()));
@@ -1289,7 +1304,7 @@ pub fn follow() -> Option<State> {
     let src = want_bundle().map(source_of);
     let app = src.filter(|s| *s != Source::Other && crate::source::controllable(*s)).and_then(|s| s.state());
     // Spotify or Apple Music, controlled, says what it plays (a song, or a podcast): Shazam isn't asked about it
-    let music_app = matches!(src, Some(Source::Spotify | Source::Music));
+    let music_app = matches!(src, Some(Source::Spotify | Source::Music | Source::Mpris));
     if let Some(s) = app.as_ref().filter(|_| music_app) {
         *APP_SAID.lock().unwrap() = Some((s.clone(), Instant::now()));
         if let Some(h) = HOST.lock().unwrap().as_mut() {

@@ -971,6 +971,7 @@ pub fn app_key(app: Source) -> Option<&'static str> {
         Source::Spotify => Some("spotify"),
         Source::Music => Some("music"),
         Source::YouTube => Some("youtube"),
+        Source::Mpris => Some("mpris"),
         Source::Other => None,
     }
 }
@@ -980,6 +981,7 @@ fn app_of_key(k: &str) -> Option<Source> {
         "spotify" => Some(Source::Spotify),
         "music" => Some(Source::Music),
         "youtube" => Some(Source::YouTube),
+        "mpris" => Some(Source::Mpris),
         _ => None,
     }
 }
@@ -1002,11 +1004,13 @@ fn add_alias(meta: &mut Value, id: &str, alias: &str) -> bool {
 
 /// The app with the most takes (each take's app, else its track id's); ties go to the latest take's.
 fn usual_app(takes: &[Value]) -> Option<Source> {
-    let mut n = [0usize; 3];
+    // (every app a take can be from, whichever this system follows)
+    const APPS: [Source; 4] = [Source::Spotify, Source::Music, Source::YouTube, Source::Mpris];
+    let mut n = [0usize; APPS.len()];
     let mut first: Option<Source> = None;
     for t in takes {
         let app = t["app"].as_str().and_then(app_of_key).unwrap_or_else(|| Source::of_id(t["track"]["id"].as_str().unwrap_or("")));
-        if let Some(i) = Source::ALL.iter().position(|s| *s == app) {
+        if let Some(i) = APPS.iter().position(|s| *s == app) {
             n[i] += 1;
             first.get_or_insert(app);
         }
@@ -1015,8 +1019,8 @@ fn usual_app(takes: &[Value]) -> Option<Source> {
     if most == 0 {
         return None;
     }
-    first.filter(|f| n[Source::ALL.iter().position(|s| s == f).unwrap_or(0)] == most)
-        .or_else(|| Source::ALL.iter().zip(n).find(|(_, k)| *k == most).map(|(s, _)| *s))
+    first.filter(|f| n[APPS.iter().position(|s| s == f).unwrap_or(0)] == most)
+        .or_else(|| APPS.iter().zip(n).find(|(_, k)| *k == most).map(|(s, _)| *s))
 }
 
 /// A song's syllable bars are too few when they span under half of where it's sung: its lyrics' span (first to last

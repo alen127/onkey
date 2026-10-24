@@ -1,7 +1,8 @@
 //! Where the music comes from: an app on this Mac that OnKey follows (what's playing and where) and listens to
 //! (its audio, through a process tap). Spotify, Apple Music, and YouTube in a browser, all through AppleScript:
 //! no login, no web API. Whichever is playing is followed; a track id says which it belongs to ("music:…" for
-//! Apple Music, "youtube:…" for YouTube, "spotify:track:…" for Spotify).
+//! Apple Music, "youtube:…" for YouTube, "spotify:track:…" for Spotify). On Linux, any desktop player, through
+//! MPRIS (mpris.rs, "mpris:…").
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -35,13 +36,18 @@ pub enum Source {
     Spotify,
     Music,
     YouTube,
+    /// a desktop player on Linux (Feishin, Spotify, a browser…), through MPRIS
+    Mpris,
     /// listening mode: a song recognised by its sound, in an app OnKey only listens to (or doesn't control)
     Other,
 }
 
 impl Source {
     /// The apps OnKey can follow by asking them (listening mode needs none of these).
+    #[cfg(target_os = "macos")]
     pub const ALL: [Source; 3] = [Source::Spotify, Source::Music, Source::YouTube];
+    #[cfg(not(target_os = "macos"))]
+    pub const ALL: [Source; 1] = [Source::Mpris];
 
     /// The app a track id belongs to.
     pub fn of_id(id: &str) -> Source {
@@ -49,6 +55,8 @@ impl Source {
             Source::Music
         } else if id.starts_with(crate::youtube::ID_PREFIX) {
             Source::YouTube
+        } else if id.starts_with(crate::mpris::ID_PREFIX) {
+            Source::Mpris
         } else if id.starts_with("isrc:") || id.starts_with("shazam:") {
             Source::Other
         } else {
@@ -62,6 +70,7 @@ impl Source {
             Source::Spotify => "Spotify",
             Source::Music => "Apple Music",
             Source::YouTube => "YouTube",
+            Source::Mpris => crate::mpris::name(crate::mpris::bundle()),
             Source::Other => "your music app",
         }
     }
@@ -73,7 +82,8 @@ impl Source {
             Source::Spotify => "com.spotify.client",
             Source::Music => "com.apple.Music",
             Source::YouTube => crate::youtube::browser().map_or("com.google.Chrome", |b| b.audio_bundle()),
-            Source::Other => crate::listen::bundle().unwrap_or("com.spotify.client"),
+            Source::Mpris => crate::mpris::bundle(),
+            Source::Other => crate::listen::bundle().unwrap_or_else(|| Source::ALL[0].bundle()),
         }
     }
 
@@ -81,7 +91,7 @@ impl Source {
     /// YouTube: it's opened in the background, and a browser is yours to keep in front.
     pub fn app_bundle(self) -> Option<&'static str> {
         match self {
-            Source::YouTube | Source::Other => None,
+            Source::YouTube | Source::Mpris | Source::Other => None,
             s => Some(s.bundle()),
         }
     }
@@ -92,6 +102,7 @@ impl Source {
             Source::Spotify => crate::spotify::state(),
             Source::Music => crate::music::state(),
             Source::YouTube => crate::youtube::state(),
+            Source::Mpris => crate::mpris::state(),
             Source::Other => crate::listen::state(),
         }
     }
@@ -108,6 +119,7 @@ impl Source {
             Source::Spotify => crate::spotify::control(action),
             Source::Music => crate::music::control(action),
             Source::YouTube => crate::youtube::control(action),
+            Source::Mpris => crate::mpris::control(action),
             Source::Other => {}
         }
     }
@@ -119,6 +131,7 @@ impl Source {
             Source::Spotify => crate::spotify::seek(seconds),
             Source::Music => crate::music::seek(seconds),
             Source::YouTube => crate::youtube::seek(seconds),
+            Source::Mpris => crate::mpris::seek(seconds),
             Source::Other => {}
         }
     }
@@ -194,6 +207,7 @@ pub fn controllable(s: Source) -> bool {
         Source::Spotify => crate::settings::control("control_spotify") && !refused(s),
         Source::Music => crate::settings::control("control_music") && !refused(s),
         Source::YouTube => crate::youtube::enabled(),
+        Source::Mpris => crate::settings::control("control_mpris"),
         Source::Other => false,
     }
 }
@@ -372,6 +386,7 @@ pub fn control_key(s: Source) -> Option<(&'static str, &'static str)> {
         Source::Spotify => Some(("control_spotify", "Spotify")),
         Source::Music => Some(("control_music", "Apple Music")),
         Source::YouTube => Some(("youtube", "your browser")),
+        Source::Mpris => Some(("control_mpris", "your music player")),
         Source::Other => None,
     }
 }
@@ -389,6 +404,7 @@ pub fn play_track(id: &str) {
             crate::youtube::set_enabled(true);      // you chose a YouTube song in OnKey: follow YouTube from now on
             crate::youtube::play_track(id)
         }
+        Source::Mpris => crate::mpris::play_track(id),
         Source::Other => {}                         // a song only ever heard: nothing to tell to play it
     }
     *ACTIVE.lock().unwrap() = Source::of_id(id);
@@ -401,18 +417,18 @@ pub fn cover_for(track: &serde_json::Value) -> Option<crate::music::Cover> {
     let id = track["id"].as_str()?;
     match Source::of_id(id) {
         Source::YouTube => Some(crate::music::Cover { art: crate::youtube::thumbnail(id.strip_prefix(crate::youtube::ID_PREFIX)?), link: None }),
-        Source::Spotify | Source::Music | Source::Other =>
+        Source::Spotify | Source::Music | Source::Mpris | Source::Other =>
             crate::music::cover_lookup(track["artist"].as_str()?, track["name"].as_str()?),
     }
 }
 
 /// Per-app values learned on this Mac (e.g. how late an app's jump lands), as atomics indexed by source.
-pub struct PerSource(pub [std::sync::atomic::AtomicI64; 4]);
+pub struct PerSource(pub [std::sync::atomic::AtomicI64; 5]);
 
 impl PerSource {
     pub const fn new(v: i64) -> PerSource {
         use std::sync::atomic::AtomicI64;
-        PerSource([AtomicI64::new(v), AtomicI64::new(v), AtomicI64::new(v), AtomicI64::new(v)])
+        PerSource([AtomicI64::new(v), AtomicI64::new(v), AtomicI64::new(v), AtomicI64::new(v), AtomicI64::new(v)])
     }
     pub fn get(&self, s: Source) -> i64 {
         self.0[s.index()].load(std::sync::atomic::Ordering::Relaxed)
@@ -427,6 +443,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn an_apple_event_that_takes_too_long_is_stopped() {
         let t = std::time::Instant::now();
         assert!(run_timed("delay 5", std::time::Duration::from_millis(300)).is_none());

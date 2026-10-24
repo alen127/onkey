@@ -7,6 +7,8 @@
 //!                    It isn't "Listen only": that's the three control settings below all off (`listen_only`)
 //!   control_spotify  let OnKey follow and control Spotify (exact positions; Sing it again, skip, pause)
 //!   control_music    the same for Apple Music
+//!   control_mpris    the same for desktop players on Linux (MPRIS); on unless turned off
+//!   mpris_player     the desktop player to follow on Linux (mpris.rs `key`); none: whichever plays
 //!   youtube          follow YouTube in your browser (youtube.rs)
 //!   shazam           use Shazam to name songs not learned here, when no music app OnKey controls says what plays
 //!                    (listen.rs `shazam_wanted`); on unless turned off. Off: nothing is sent to Apple
@@ -33,7 +35,11 @@ use serde_json::{json, Value};
 static FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static VALUES: Mutex<Option<Value>> = Mutex::new(None);
 
+#[cfg(target_os = "macos")]
 pub const CONTROL_KEYS: [&str; 2] = ["control_spotify", "control_music"];
+/// Linux: one for every desktop player (MPRIS), which asks no permission
+#[cfg(not(target_os = "macos"))]
+pub const CONTROL_KEYS: [&str; 1] = ["control_mpris"];
 
 /// Every setting as it is now (a problem report keeps only their on/off values: report.rs).
 pub fn all() -> Value {
@@ -97,7 +103,8 @@ fn save(file: &Path, v: &Value) {
 /// An existing install's control settings, as they were: off where never allowed. A new install gets none
 /// written (so control is on by default once setup is done: see `control`). True if `v` changed.
 fn migrate(v: &mut Value, existed: bool) -> bool {
-    if !existed {
+    // (Linux installs are all newer than that)
+    if !existed || cfg!(not(target_os = "macos")) {
         return false;
     }
     let mut changed = false;
@@ -126,7 +133,8 @@ pub fn control(key: &str) -> bool {
 }
 
 fn control_in(v: &Value, key: &str) -> bool {
-    v[key].as_bool().unwrap_or_else(|| v["setup_done"].as_bool().unwrap_or(false))
+    // (on Linux there's no prompt for setup to bring up first: on from the start)
+    v[key].as_bool().unwrap_or_else(|| cfg!(target_os = "linux") || v["setup_done"].as_bool().unwrap_or(false))
 }
 
 /// Listen only: follow songs by their sound alone, controlling no app: listening mode with Spotify, Apple Music and
@@ -197,6 +205,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn control_is_on_by_default_for_new_installs_only() {
         // a new install: nothing written; off until setup is done (its step asks macOS), then on
         let mut v = json!({});
@@ -225,6 +234,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn desktop_players_are_followed_from_the_start_and_listen_only_turns_them_off() {
+        // nothing to ask permission for: on before setup, for new installs and old files alike
+        let mut v = json!({});
+        assert!(!migrate(&mut v, true));
+        assert!(control_in(&v, "control_mpris") && !listen_only_in(&v));
+        v["control_mpris"] = json!(false);
+        assert!(listen_only_in(&v));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn listen_only_is_every_app_off_and_has_no_setting_of_its_own() {
         // a new install after setup: Spotify and Apple Music on, YouTube off (the defaults)
         let mut v = json!({"setup_done": true});
