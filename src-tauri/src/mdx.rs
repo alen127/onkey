@@ -24,14 +24,15 @@ pub struct Mdx {
 }
 
 impl Mdx {
-    /// `coreml`: run on Apple's Core ML (GPU / Neural Engine) instead of the CPU.
+    /// `coreml`: run on Apple's Core ML (GPU / Neural Engine) instead of the CPU; on Linux, on the GPU through CUDA
+    /// (`pitch::load_accelerated`).
     pub fn load(path: &std::path::Path, threads: usize, coreml: bool) -> Result<Mdx, String> {
         // one chunk a run: the model's free batch dimension is fixed at 1, so Core ML sees static shapes (with an
         // unbounded one the Neural Engine refuses the model, "E5RT ... unbounded dimension", and the GPU runs it)
         let configure = |b: SessionBuilder| b.with_optimization_level(GraphOptimizationLevel::Level3)?.with_intra_threads(threads)?
             .with_dimension_override("batch_size", 1);
         let session = if coreml {
-            crate::pitch::load_coreml(path, configure)
+            crate::pitch::load_accelerated(path, configure)
         } else {
             Session::builder().and_then(configure).and_then(|b| b.commit_from_file(path))
         }.map_err(|e| format!("loading {}: {e}", path.display()))?;

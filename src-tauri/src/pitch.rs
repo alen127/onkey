@@ -46,7 +46,8 @@ pub fn lean(b: ort::session::builder::SessionBuilder) -> ort::Result<ort::sessio
 ///
 /// On a small Mac (lowmem.rs) the session keeps no memory patterns and no CPU arena, so what a run took is given
 /// back after it instead of held for the next (the `lean` sessions' reason, for the CPU side of a Core ML model).
-pub fn load_coreml(model: &std::path::Path, configure: impl Fn(SessionBuilder) -> ort::Result<SessionBuilder>) -> ort::Result<Session> {
+#[cfg(target_os = "macos")]
+pub fn load_accelerated(model: &std::path::Path, configure: impl Fn(SessionBuilder) -> ort::Result<SessionBuilder>) -> ort::Result<Session> {
     use ort::execution_providers::{coreml::CoreMLModelFormat, CoreMLExecutionProvider, CPUExecutionProvider};
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _loading = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -73,8 +74,52 @@ pub fn load_coreml(model: &std::path::Path, configure: impl Fn(SessionBuilder) -
     })
 }
 
+/// A session on the GPU (NVIDIA's, through ONNX Runtime's CUDA provider) for the model file `model`, on Linux, or
+/// on the CPU when CUDA can't take it: no NVIDIA driver, no CUDA or cuDNN libraries found (the launcher points
+/// LD_LIBRARY_PATH at them), or ONKEY_NO_CUDA set. Which it is goes in the log, once per model. One session loads at
+/// a time, as on Core ML. cuDNN picks its convolution kernels by heuristic rather than timing every one at the
+/// first run (seconds per model, and its trial buffers take GPU memory others are using).
+#[cfg(not(target_os = "macos"))]
+pub fn load_accelerated(model: &std::path::Path, configure: impl Fn(SessionBuilder) -> ort::Result<SessionBuilder>) -> ort::Result<Session> {
+    use ort::execution_providers::{cuda::CuDNNConvAlgorithmSearch, CPUExecutionProvider, CUDAExecutionProvider, ExecutionProvider};
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _loading = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let name = model.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let cpu = || -> ort::Result<Session> {
+        let b = configure(Session::builder()?)?;
+        let b = if crate::lowmem::low_memory() { b.with_memory_pattern(false)? } else { b };
+        b.with_execution_providers([CPUExecutionProvider::default().with_arena_allocator(!crate::lowmem::low_memory()).build()])?
+            .commit_from_file(model)
+    };
+    if std::env::var_os("ONKEY_NO_CUDA").is_some() {
+        crate::engine::log(&format!("{name}: on the CPU (ONKEY_NO_CUDA)"));
+        return cpu();
+    }
+    let cuda = CUDAExecutionProvider::default().with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Heuristic);
+    match cuda.is_available() {
+        Ok(true) => {}
+        _ => {
+            crate::engine::log(&format!("{name}: on the CPU (this ONNX Runtime has no CUDA)"));
+            return cpu();
+        }
+    }
+    let gpu = configure(Session::builder()?).and_then(|b| b.with_execution_providers([cuda.build().error_on_failure()]))
+        .and_then(|b| b.commit_from_file(model));
+    match gpu {
+        Ok(s) => {
+            crate::engine::log(&format!("{name}: on the GPU (CUDA)"));
+            Ok(s)
+        }
+        Err(e) => {
+            crate::engine::log(&format!("{name}: on the CPU: CUDA couldn't take it ({e})"));
+            cpu()
+        }
+    }
+}
+
 /// The cache's layout and the session options that shape a compiled model (ONNX Runtime keys an entry by the
 /// model's path alone): bumped whenever those change, so old entries aren't reused.
+#[cfg(target_os = "macos")]
 const COREML_CACHE_VERSION: u32 = 2;
 
 /// Where the compiled models are kept: the app sets its data folder at launch, so each model is compiled once,
@@ -87,6 +132,7 @@ pub fn set_coreml_cache_dir(dir: &std::path::Path) {
 }
 
 /// Where `model`'s compiled Core ML pieces are kept (None: no cache folder could be made).
+#[cfg(target_os = "macos")]
 fn coreml_cache(model: &std::path::Path) -> Option<std::path::PathBuf> {
     let meta = std::fs::metadata(model).ok()?;
     let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
@@ -118,6 +164,8 @@ impl Crepe {
     /// Engine: it needs fixed input sizes, and runs only part of it. If Core ML can't take it, ONNX Runtime's CPU
     /// kernels as before (ONKEY_LIVE_PITCH_CPU=1 forces that in development builds, for comparison).
     pub fn new() -> ort::Result<Crepe> {
+        // (Linux: ONNX Runtime's CPU kernels, two threads: a small share of a laptop's many cores)
+        #[cfg(target_os = "macos")]
         if crate::devtest::knob!("ONKEY_LIVE_PITCH_CPU").is_none() {
             use ort::execution_providers::{coreml::{CoreMLComputeUnits, CoreMLModelFormat}, CoreMLExecutionProvider, CPUExecutionProvider};
             // (Core ML's compiler prints, on stdout, that the model's sizes don't suit the Neural Engine; it isn't
@@ -152,7 +200,7 @@ impl Crepe {
     pub fn from_file(path: &std::path::Path, threads: usize, coreml_batch: Option<usize>) -> ort::Result<Crepe> {
         let configure = |b: SessionBuilder| b.with_optimization_level(GraphOptimizationLevel::Level3)?.with_intra_threads(threads);
         let session = match coreml_batch {
-            Some(_) => load_coreml(path, configure)?,
+            Some(_) => load_accelerated(path, configure)?,
             None => configure(Session::builder()?)?.commit_from_file(path)?,
         };
         Ok(Crepe { session, batch: coreml_batch, hi_bin: BIN_1100_HZ, tones: None })
@@ -206,6 +254,7 @@ impl Crepe {
 }
 
 /// Run `f` with this process's stdout going nowhere (what native code prints to it meanwhile is dropped).
+#[cfg(target_os = "macos")]
 fn quiet_stdout<R>(f: impl FnOnce() -> R) -> R {
     extern "C" {
         fn fflush(stream: *mut libc::FILE) -> libc::c_int;
